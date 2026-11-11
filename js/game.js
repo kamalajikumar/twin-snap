@@ -43,8 +43,8 @@
     e.canvas.width = Math.round(cw * G.dpr);
     e.canvas.height = Math.round(vh * G.dpr);
     if (G.run) {
-      G.run.H = G.H;
-      G.run.TY = Math.round(G.H * 0.74);
+      const dy = Core.resizeRun(G.run, G.H);
+      for (let i = 0; i < G.trail.length; i++) G.trail[i].y += dy;
     }
   }
 

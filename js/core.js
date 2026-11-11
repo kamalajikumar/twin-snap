@@ -328,6 +328,34 @@
     run.spawnGap = Math.max(run.spawnGap, 40);
   }
 
+  /**
+   * Adapt a run to a new viewport height without moving anything relative to the twins.
+   * The twin line moves to round(H * 0.74) and every row and pickup moves with it, so a
+   * resize can neither push the twins into a block nor make a row count as passed.
+   * `spawnGap` is the distance still to scroll before the next row spawns at the top;
+   * the newest row is now dy further along, so the gap shrinks by dy. Shrinking (dy < 0)
+   * delays the next spawn and keeps the designed spacing; growing (dy > 0) may spawn on the
+   * next step with a one-off gap larger than designed, never smaller.
+   * No events, scoring or RNG use.
+   * A height that is not a finite number above zero is ignored: it would turn every position
+   * into NaN or Infinity and the run could never recover.
+   * @param {object} run
+   * @param {number} H new logical viewport height
+   * @returns {number} dy, the shift applied to world y (callers move their own y-based state by it)
+   */
+  function resizeRun(run, H) {
+    if (!Number.isFinite(H) || H <= 0) return 0;
+    const TY = Math.round(H * 0.74);
+    const dy = TY - run.TY;
+    run.H = H;
+    run.TY = TY;
+    if (dy === 0) return 0;
+    for (let i = 0; i < run.rows.length; i++) run.rows[i].y += dy;
+    for (let i = 0; i < run.picks.length; i++) run.picks[i].y += dy;
+    run.spawnGap -= dy;
+    return dy;
+  }
+
   function nextRow(run) {
     let best = null;
     for (let i = 0; i < run.rows.length; i++) {
@@ -365,6 +393,6 @@
 
   return {
     C, clamp, mulberry32, speed, gapWidth, rowTime,
-    stepTwin, makeRow, hits, clearance, createRun, stepRun, reviveRun, nextRow, botHeld,
+    stepTwin, makeRow, hits, clearance, createRun, stepRun, reviveRun, resizeRun, nextRow, botHeld,
   };
 });
