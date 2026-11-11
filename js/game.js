@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const TS = root.TS;
-  const { Core, CFG, Store, Sfx, Fx, Render, UI, Ads } = TS;
+  const { Core, CFG, Input, Store, Sfx, Fx, Render, UI, Ads } = TS;
   const { C } = Core;
   const doc = root.document;
 
@@ -70,6 +70,7 @@
   }
 
   function startRun() {
+    dropInput(); // a new run never inherits a hold; the press that starts it is added afterwards
     resetRunState();
     G.run = Core.createRun(newSeed(), G.H);
     G.mode = 'play';
@@ -81,7 +82,7 @@
     const run = G.run;
     G.mode = 'dying';
     G.deadT = 0;
-    G.held = false;
+    dropInput();
     const vw = Math.max(run.twin.w, 12);
     Fx.burst(C.HALF - vw, run.TY, G.skin.a, 34, 380, 520);
     Fx.burst(C.HALF + vw, run.TY, G.skin.b, 34, 380, 520);
@@ -119,7 +120,7 @@
     G.revived = true;
     Core.reviveRun(G.run);
     G.mode = 'ready';
-    G.held = false;
+    dropInput();
     UI.hideAll();
   }
 
@@ -311,47 +312,70 @@
   }
 
   // ---------- input ----------
-  function press() {
-    Sfx.init();
-    if (UI.modalOpen()) return;
-    if (G.mode === 'menu') {
-      startRun();
-      G.held = true;
-    } else if (G.mode === 'play') {
-      G.held = true;
-      Sfx.press();
-    } else if (G.mode === 'ready') {
-      G.mode = 'play';
-      G.held = true;
-    } else if (G.mode === 'over' && root.performance.now() - G.overAt > CFG.OVER_LOCK_MS) {
-      startRun();
-      G.held = true;
-    }
+  // Which fingers and keys are down lives in `input` (see input.js); G.held is derived from it.
+  let input = Input.create();
+  const syncHeld = () => { G.held = G.mode === 'play' && Input.isHeld(input); };
+
+  /** Forget every finger and key that is down. Each has to be pressed again to count. */
+  function dropInput() {
+    input = Input.interrupt(input);
+    G.held = false;
   }
-  const release = () => { G.held = false; };
+
+  function onDown(id, primary) {
+    Sfx.init();
+    const locked = G.mode === 'over' && root.performance.now() - G.overAt <= CFG.OVER_LOCK_MS;
+    const r = Input.down(input, id, { mode: G.mode, modal: UI.modalOpen(), locked, primary });
+    if (r.action === 'start') startRun();
+    else if (r.action === 'resume') G.mode = 'play';
+    else if (r.action === 'hold' && r.first) Sfx.press();
+    input = r.state; // after startRun(), which drops older holds
+    syncHeld();
+  }
+
+  function onUp(id) {
+    input = Input.up(input, id);
+    syncHeld();
+  }
+
+  /** Focus or visibility was lost: drop the hold and pause, so the run cannot go on unattended. */
+  function interrupt() {
+    dropInput();
+    if (G.mode === 'play') G.mode = 'ready';
+  }
+
   const onControl = (target) => !!(target && target.closest && target.closest('button, .card'));
+  const isPlayKey = (code) => code === 'Space' || code === 'ArrowUp';
 
   function bindInput(stage) {
     stage.addEventListener('pointerdown', (e) => {
       if (onControl(e.target)) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return; // only the main button plays
       e.preventDefault();
-      press();
+      try {
+        stage.setPointerCapture(e.pointerId); // keep receiving this pointer's release off-canvas
+      } catch (err) {
+        /* capture is a bonus: window-level pointerup and blur still end the hold */
+      }
+      onDown(Input.pointerId(e.pointerId), e.isPrimary !== false);
     });
-    root.addEventListener('pointerup', release);
-    root.addEventListener('pointercancel', release);
-    root.addEventListener('blur', release);
+    const pointerEnd = (e) => onUp(Input.pointerId(e.pointerId));
+    root.addEventListener('pointerup', pointerEnd);
+    root.addEventListener('pointercancel', pointerEnd);
+    stage.addEventListener('lostpointercapture', pointerEnd);
     stage.addEventListener('contextmenu', (e) => e.preventDefault());
     root.addEventListener('keydown', (e) => {
-      if (e.repeat || (e.code !== 'Space' && e.code !== 'ArrowUp') || onControl(e.target)) return;
+      if (e.repeat || !isPlayKey(e.code) || onControl(e.target)) return;
       e.preventDefault();
-      press();
+      onDown(Input.keyId(e.code), false);
     });
     root.addEventListener('keyup', (e) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp') release();
+      if (isPlayKey(e.code)) onUp(Input.keyId(e.code));
     });
+    root.addEventListener('blur', interrupt);
     doc.addEventListener('visibilitychange', () => {
-      release();
-      if (doc.hidden && G.mode === 'play') G.mode = 'ready';
+      if (doc.hidden) interrupt();
+      else dropInput();
     });
     root.addEventListener('resize', resize);
   }

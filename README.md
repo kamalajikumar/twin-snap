@@ -17,19 +17,22 @@ No build step and no dependencies: open `index.html` in a browser.
 | File | Role |
 | --- | --- |
 | `js/core.js` | Pure game simulation: physics, level generator, scoring, Fever. No DOM. |
+| `js/input.js` | Pure input state: which fingers and keys are down. No DOM. |
 | `js/config.js` | Themes, skins, prices. |
 | `js/services.js` | Save data, synthesised sound, haptics, ad adapter (placeholder). |
 | `js/sprites.js`, `js/render.js`, `js/fx.js` | Canvas drawing and effects. |
 | `js/ui.js` | Menus. |
 | `js/game.js` | Game loop, input, glue. |
 | `tests/core.test.js` | Logic tests, including an autopilot that proves levels are beatable. |
+| `tests/input.test.js` | Input-state tests: multi-touch, duplicates, interruptions. |
+| `tests/game.input.test.js` | Runs the real scripts in a stand-in browser and fires input events at them. |
 | `tools/humansim.js` | Simulated imperfect players, used to tune difficulty. |
 | `tools/bundle.js` | Packs everything into one HTML file. |
 
 ## Commands
 
 ```bash
-node --test tests/core.test.js
+node --test tests/core.test.js tests/input.test.js tests/game.input.test.js
 node tools/humansim.js ../js/core.js
 node tools/bundle.js
 ```
