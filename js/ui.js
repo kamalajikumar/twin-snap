@@ -152,6 +152,8 @@
     },
 
     showPause() { this.el.pause.hidden = false; },
+    /** @param {number} y centre of the paused sound toggle, CSS px from the top of the stage */
+    placePause(y) { this.el.pause.style.top = y + 'px'; },
     hidePause() { this.hide(this.el.pause); },
 
     showMenu(save) {

@@ -43,6 +43,16 @@
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const EASY_ROWS = 6; // warm-up: only "hold" and "let go" rows, with generous sizes
 
+  /*
+   * Rows appear at the top edge, so the distance from the top to the twins decides how long
+   * every row is on screen before it arrives. That distance is capped at the H=640 reference,
+   * round(640 * 0.74) = 474: taller screens show extra space below the twins, not extra warning,
+   * so every screen gets the same preview time.
+   */
+  const TWIN_LINE_MAX = 474;
+  /** @param {number} H logical viewport height @returns {number} y of the twins */
+  const twinLine = (H) => Math.min(Math.round(H * 0.74), TWIN_LINE_MAX);
+
   function mulberry32(seed) {
     let a = seed >>> 0;
     return function () {
@@ -183,7 +193,7 @@
     return {
       rng: mulberry32(seed),
       H,
-      TY: Math.round(H * 0.74),
+      TY: twinLine(H),
       twin: { w: 0, v: 0, closed: true },
       rows: [],
       picks: [],
@@ -330,7 +340,7 @@
 
   /**
    * Adapt a run to a new viewport height without moving anything relative to the twins.
-   * The twin line moves to round(H * 0.74) and every row and pickup moves with it, so a
+   * The twin line moves to twinLine(H) and every row and pickup moves with it, so a
    * resize can neither push the twins into a block nor make a row count as passed.
    * `spawnGap` is the distance still to scroll before the next row spawns at the top;
    * the newest row is now dy further along, so the gap shrinks by dy. Shrinking (dy < 0)
@@ -345,7 +355,7 @@
    */
   function resizeRun(run, H) {
     if (!Number.isFinite(H) || H <= 0) return 0;
-    const TY = Math.round(H * 0.74);
+    const TY = twinLine(H);
     const dy = TY - run.TY;
     run.H = H;
     run.TY = TY;
@@ -392,7 +402,7 @@
   }
 
   return {
-    C, clamp, mulberry32, speed, gapWidth, rowTime,
+    C, clamp, mulberry32, speed, gapWidth, rowTime, twinLine,
     stepTwin, makeRow, hits, clearance, createRun, stepRun, reviveRun, resizeRun, nextRow, botHeld,
   };
 });

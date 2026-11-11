@@ -13,6 +13,7 @@
   const cloneTheme = (t) => ({ top: t.top.slice(), bot: t.bot.slice(), block: t.block.slice(), rim: t.rim.slice() });
   const skinOf = (save) => CFG.SKINS.find((s) => s.id === save.skin) || CFG.SKINS[0];
   const newSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+  const PHONE_ASPECT = 0.5625; // 9:16, width / height of the playfield column on wide screens
 
   const G = {
     mode: 'menu', // menu (demo plays) | play | ready (paused) | count (3-2-1 to resume) | dying | over
@@ -34,7 +35,9 @@
     const vw = app.clientWidth;
     const vh = app.clientHeight;
     if (!vw || !vh) return;
-    const cw = vw / vh > 0.68 ? Math.round(vh * 0.5625) : vw; // wide screens get a phone-shaped column
+    // Anything wider than 9:16 gets a 9:16 column with side bars, so the playfield is never
+    // shorter than 640 units. Not rounded: a rounded column would make it a fraction short.
+    const cw = vw / vh > PHONE_ASPECT ? vh * PHONE_ASPECT : vw;
     const e = UI.el;
     e.stage.style.width = cw + 'px';
     e.stage.style.height = vh + 'px';
@@ -46,7 +49,18 @@
     if (G.run) {
       const dy = Core.resizeRun(G.run, G.H);
       for (let i = 0; i < G.trail.length; i++) G.trail[i].y += dy;
+      placePause();
     }
+  }
+
+  /** The paused sound toggle sits a fixed distance above the twins, in CSS pixels. */
+  function placePause() {
+    UI.placePause((G.run.TY + Render.PAUSE.toggle) * G.scale);
+  }
+
+  function showPause() {
+    placePause();
+    UI.showPause();
   }
 
   function resetRunState() {
@@ -123,7 +137,7 @@
     G.mode = 'ready';
     dropInput();
     UI.hideAll();
-    UI.showPause();
+    showPause();
   }
 
   function onPass(e, loud) {
@@ -374,7 +388,7 @@
   function interrupt() {
     dropInput();
     if (G.mode === 'play' || G.mode === 'count') G.mode = 'ready';
-    if (G.mode === 'ready') UI.showPause();
+    if (G.mode === 'ready') showPause();
     G.countMs = 0;
     G.countDigit = 0;
   }

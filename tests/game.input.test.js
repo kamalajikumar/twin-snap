@@ -1,119 +1,11 @@
 'use strict';
 /*
- * Integration tests for input handling in js/game.js.
- * The real scripts are loaded in the order index.html lists them, inside a tiny stand-in for
- * the browser (no rendering or sound; storage is an in-memory map). Events are fired at the same listeners the
- * browser would call, and animation frames are advanced by hand.
+ * Integration tests for input handling in js/game.js, run against the real scripts in the
+ * stand-in browser from tests/helpers/world.js.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-const ROOT = path.join(__dirname, '..');
-const SCRIPTS = [...fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8').matchAll(/<script src="([^"]+)"><\/script>/g)]
-  .map((m) => m[1]);
-
-/** @param {{storage?: Map<string, string>}} [opts] share `storage` between worlds to simulate a reload */
-function makeWorld(opts = {}) {
-  const storage = opts.storage || new Map();
-  const clock = { t: 1000 };
-  const bags = { win: {}, doc: {} };
-  const on = (bag) => (type, fn) => { (bag[type] = bag[type] || []).push(fn); };
-  const fire = (bag, type, e) => (bag[type] || []).slice().forEach((fn) => fn(e));
-  const drawn = []; // text painted on the canvas during the latest frame
-  const ctx2d = new Proxy({}, {
-    get: (t, k) => {
-      if (k === 'fillText') return (text) => { drawn.push(String(text)); };
-      if (k === 'measureText') return () => ({ width: 10 });
-      if (k === 'createLinearGradient' || k === 'createRadialGradient') return () => ({ addColorStop() {} });
-      return () => {};
-    },
-    set: () => true,
-  });
-  const makeEl = (tag) => {
-    const bag = {};
-    const attrs = {};
-    return {
-      bag, attrs, tag, style: {}, hidden: false, children: [], clientWidth: 360, clientHeight: 640,
-      classList: { toggle() {}, add() {}, remove() {} },
-      appendChild(c) { this.children.push(c); return c; },
-      setAttribute(k, v) { attrs[k] = String(v); },
-      getAttribute: (k) => (k in attrs ? attrs[k] : null),
-      addEventListener: on(bag),
-      getContext: () => ctx2d,
-      setPointerCapture() {},
-      // Buttons and the result card count as controls, like Element.closest('button, .card').
-      closest() { return tag === 'button' || /\bcard\b/.test(attrs.class || '') ? this : null; },
-      contains(x) { return x === this || this.children.some((c) => c.contains && c.contains(x)); },
-      focus() { document.activeElement = this; },
-      blur() { if (document.activeElement === this) document.activeElement = document.body; },
-    };
-  };
-  const app = makeEl('main');
-  const document = {
-    hidden: false, readyState: 'complete', body: makeEl('body'), activeElement: null,
-    getElementById: (id) => (id === 'app' ? app : null),
-    createElement: makeEl,
-    addEventListener: on(bags.doc),
-  };
-  document.activeElement = document.body;
-  const win = {
-    document, devicePixelRatio: 1, navigator: {}, location: { href: 'test://twin-snap' },
-    performance: { now: () => clock.t },
-    localStorage: { getItem: (k) => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => { storage.set(k, String(v)); } },
-    requestAnimationFrame: (fn) => { win.nextFrame = fn; },
-    setTimeout: () => 0, clearTimeout() {},
-    addEventListener: on(bags.win),
-  };
-  win.self = win;
-  vm.createContext(win);
-  for (const src of SCRIPTS) vm.runInContext(fs.readFileSync(path.join(ROOT, src), 'utf8'), win, { filename: src });
-
-  const TS = win.TS;
-  const G = TS.Game;
-  const stage = TS.UI.el.stage;
-  const anywhere = { closest: () => null };
-  const world = {
-    G, TS, clock, storage, document,
-    /** A click as the browser sends it: detail 1 for a pointer click, 0 for keyboard activation. */
-    click(el, detail = 1) { fire(el.bag, 'click', { detail, currentTarget: el, target: el }); },
-    tick(n = 1, ms = 16) {
-      for (let i = 0; i < n; i++) { drawn.length = 0; clock.t += ms; win.nextFrame(clock.t); }
-    },
-    /** Text painted on the canvas in the latest frame. */
-    texts: () => drawn.slice(),
-    /** Advances `ms` of countdown time in 50 ms frames (the longest frame the loop accepts). */
-    wait(ms) { world.tick(ms / 50, 50); },
-    down(id, o) {
-      fire(stage.bag, 'pointerdown', {
-        pointerId: id, pointerType: 'touch', isPrimary: true, button: 0, target: stage, preventDefault() {}, ...o,
-      });
-    },
-    up(id) { fire(bags.win, 'pointerup', { pointerId: id }); },
-    cancel(id) { fire(bags.win, 'pointercancel', { pointerId: id }); },
-    lostCapture(id) { fire(stage.bag, 'lostpointercapture', { pointerId: id }); },
-    keyDown(code, o) { fire(bags.win, 'keydown', { code, repeat: false, target: anywhere, preventDefault() {}, ...o }); },
-    keyUp(code) { fire(bags.win, 'keyup', { code }); },
-    blur() { fire(bags.win, 'blur', {}); },
-    hide() { document.hidden = true; fire(bags.doc, 'visibilitychange', {}); },
-    show() { document.hidden = false; fire(bags.doc, 'visibilitychange', {}); },
-    /** Runs frames until the game reaches `mode`. */
-    until(mode) {
-      for (let i = 0; i < 4000 && G.mode !== mode; i++) world.tick();
-      assert.equal(G.mode, mode, `never reached ${mode}`);
-    },
-    /** Starts a run with finger `id` and lets go again. */
-    startAndRelease(id = 1) { world.down(id); world.up(id); world.tick(); },
-    /** Plays hands-off until the first block ends the run. */
-    dieNow() { world.until('over'); },
-    passLock() { world.tick(40); },
-  };
-  world.tick();
-  assert.equal(G.mode, 'menu');
-  return world;
-}
+const { SCRIPTS, makeWorld, pausedWorld } = require('./helpers/world.js');
 
 test('the page loads the input module before the game', () => {
   assert.ok(SCRIPTS.includes('js/input.js'), 'index.html must load js/input.js');
@@ -380,17 +272,6 @@ test('presses under an open dialog are ignored', () => {
 });
 
 // ---------- pause and resume countdown (M0.3) ----------
-
-/** Starts a run, lets it play briefly, then loses focus so it pauses. */
-function pausedWorld() {
-  const w = makeWorld();
-  w.startAndRelease();
-  w.tick(3);
-  w.blur();
-  w.tick();
-  assert.equal(w.G.mode, 'ready');
-  return w;
-}
 
 /** Everything the simulation owns, as text (functions such as the RNG are left out). */
 const snapshot = (run) => JSON.stringify(run);
@@ -797,4 +678,76 @@ test('interruptions during the countdown and revive both bring the paused toggle
   assert.equal(r.G.mode, 'ready');
   assert.equal(pauseShown(r), true);
   assert.equal(r.TS.UI.el.over.hidden, true);
+});
+
+// ---------- viewport and paused layout around the twin line (M0.5) ----------
+
+const TOGGLE_CSS_H = 56; // .btn: 17px text, 12px padding, 3px border, 5px shadow (CSS px)
+const C_TWIN_TOP = 18; // twins are drawn ~14 units around the line, plus squash and stretch
+const VIEWPORTS = [[360, 800], [400, 600], [1000, 800], [360, 640], [320, 568], [640, 300]];
+
+test('viewports: tall phones keep their height; shorter and wider ones get a 640-high column', () => {
+  for (const [vw, vh, cw, H] of [[360, 800, 360, 800], [400, 600, 337.5, 640], [1000, 800, 450, 640]]) {
+    const w = makeWorld({ viewport: [vw, vh] });
+    assert.equal(w.TS.UI.el.stage.style.width, cw + 'px', `${vw}x${vh}: column width`);
+    assert.equal(w.G.H, H, `${vw}x${vh}: logical height`);
+    w.startAndRelease();
+    assert.equal(w.G.run.TY, 474, `${vw}x${vh}: twin line`);
+  }
+});
+
+test('resizing mid-run between supported viewports never moves the twin line or the rows', () => {
+  // Arrange
+  const w = makeWorld({ viewport: [360, 800] });
+  w.startAndRelease();
+  w.tick(60);
+  const rows = () => w.G.run.rows.map((r) => r.y);
+  const before = rows();
+  const gates = w.G.run.gates;
+  // Act / Assert
+  for (const [vw, vh] of [[400, 600], [1000, 800], [360, 800]]) {
+    w.resizeTo(vw, vh);
+    assert.equal(w.G.run.TY, 474, `${vw}x${vh}`);
+    assert.deepEqual(rows(), before, `${vw}x${vh}: rows moved`);
+    assert.equal(w.G.run.gates, gates);
+  }
+});
+
+test('the paused screen is laid out around the twin line at every supported viewport', () => {
+  for (const vp of VIEWPORTS) {
+    const w = pausedWorld({ viewport: vp });
+    const s = w.G.scale;
+    const TY = w.G.run.TY;
+    const centre = parseFloat(w.TS.UI.el.pause.style.top) / s; // toggle centre, game units
+    const half = TOGGLE_CSS_H / 2 / s;
+    const paused = w.textY('PAUSED');
+    const pill = w.textY('TAP TO RESUME');
+    const at = `${vp.join('x')}`;
+    assert.ok(Math.abs(centre - (TY + w.TS.Render.PAUSE.toggle)) < 1e-9, `${at}: toggle follows the twin line`);
+    assert.ok(paused + 27 < centre - half, `${at}: toggle overlaps PAUSED`);
+    assert.ok(centre + half < TY - C_TWIN_TOP, `${at}: toggle overlaps the twins`);
+    assert.ok(centre + half < pill - 14, `${at}: toggle overlaps TAP TO RESUME`);
+    assert.ok(paused - 27 > 160, `${at}: PAUSED overlaps the score and meter`);
+  }
+});
+
+test('the paused toggle moves with the twin line when the viewport changes while paused', () => {
+  const w = pausedWorld({ viewport: [360, 800] });
+  for (const [vw, vh] of [[400, 600], [640, 300], [360, 800]]) {
+    w.resizeTo(vw, vh);
+    const expected = (w.G.run.TY + w.TS.Render.PAUSE.toggle) * w.G.scale;
+    assert.ok(Math.abs(parseFloat(w.TS.UI.el.pause.style.top) - expected) < 1e-9, `${vw}x${vh}`);
+  }
+});
+
+test('the 3-2-1 digits sit where PAUSED was, clear of the score and the twins', () => {
+  for (const vp of [[360, 800], [1000, 800]]) {
+    const w = pausedWorld({ viewport: vp });
+    const paused = w.textY('PAUSED');
+    w.down(1);
+    w.wait(50);
+    const digit = w.textY('3');
+    assert.equal(digit, paused, `${vp.join('x')}`);
+    assert.ok(digit - 48 > 160 && digit + 48 < w.G.run.TY - C_TWIN_TOP);
+  }
 });

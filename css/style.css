@@ -58,8 +58,8 @@ body {
 .group { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 #menu .group:first-of-type { margin-bottom: 26vh; }
 .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-/* Paused: the canvas draws PAUSED at 42% height and TAP TO RESUME near 82%; sit the toggle between. */
-#pause { transform: translateY(12vh); }
+/* Paused: game.js sets `top` so the toggle sits between PAUSED and the twins (see Render.PAUSE). */
+#pause { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); }
 
 /* ---------- title ---------- */
 #menu { height: 100%; justify-content: space-between; padding-block: 6% 3%; box-sizing: border-box; }

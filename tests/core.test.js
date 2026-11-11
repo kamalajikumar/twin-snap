@@ -243,7 +243,7 @@ test('resizeRun keeps every row and pickup at the same distance from the twins',
     const dy = Core.resizeRun(run, H);
     // Assert
     assert.equal(run.H, H);
-    assert.equal(run.TY, Math.round(H * 0.74));
+    assert.equal(run.TY, Core.twinLine(H));
     assert.equal(dy, run.TY - oldTY);
     assertClose(relRows(run), rows, `rows H=${H}`);
     assertClose(relPicks(run), picks, `picks H=${H}`);
@@ -407,4 +407,116 @@ test('repeated viewport changes during play neither kill nor award', () => {
     assert.ok(resizes > 50, `seed ${seed}: only ${resizes} resizes`);
     assert.ok(run.gates >= 100, `seed ${seed}: bot only cleared ${run.gates} gates with resizes`);
   }
+});
+
+// --- Screen-height fairness (B7) ----------------------------------------------------------
+
+test('the twin line follows 74% of the height up to the H=640 depth, then stays there', () => {
+  const expected = { 529: 391, 600: 444, 640: 474, 700: 474, 880: 474, 2000: 474 };
+  for (const [H, TY] of Object.entries(expected)) assert.equal(Core.twinLine(Number(H)), TY, `H=${H}`);
+  for (const H of [529, 640, 880, 2000]) assert.equal(Core.createRun(1, H).TY, Core.twinLine(H), `createRun H=${H}`);
+});
+
+test('resizing between heights at or above 640 never moves the twin line', () => {
+  for (const [from, to] of [[640, 880], [880, 640]]) {
+    // Arrange
+    const run = Core.createRun(2, from);
+    botSteps(run, 1500);
+    const rows = run.rows.map((r) => r.y);
+    const picks = run.picks.map((p) => p.y);
+    const gap = run.spawnGap;
+    const before = counters(run);
+    // Act
+    const dy = Core.resizeRun(run, to);
+    // Assert
+    assert.equal(dy, 0, `${from} -> ${to}`);
+    assert.equal(run.H, to);
+    assert.equal(run.TY, 474);
+    assert.deepEqual(run.rows.map((r) => r.y), rows);
+    assert.deepEqual(run.picks.map((p) => p.y), picks);
+    assert.equal(run.spawnGap, gap);
+    assert.deepEqual(counters(run), before);
+  }
+});
+
+test('resizing 529 -> 640 moves everything with the twin line by +83', () => {
+  // Arrange
+  const run = Core.createRun(2, 529);
+  botSteps(run, 1500);
+  const rows = relRows(run);
+  const picks = relPicks(run);
+  const gap = run.spawnGap;
+  const before = counters(run);
+  // Act
+  const dy = Core.resizeRun(run, 640);
+  // Assert
+  assert.equal(dy, 83);
+  assert.equal(run.TY, 474);
+  assertClose(relRows(run), rows, 'rows');
+  assertClose(relPicks(run), picks, 'picks');
+  assert.ok(Math.abs(run.spawnGap - (gap - 83)) <= EPS);
+  assert.deepEqual(counters(run), before);
+});
+
+/**
+ * Plays one seed with the autopilot and records everything the player could notice: every event
+ * with its step, the counters, the twins, and the rows and pickups still in play.
+ * Rows that are already passed and pickups more than 60 below the twins are left out: they only
+ * wait to be culled past the bottom edge, which is height-dependent and has no gameplay effect.
+ */
+function gameplayTrace(seed, H, steps) {
+  const run = Core.createRun(seed, H);
+  const trace = [];
+  for (let i = 0; i < steps && !run.dead; i++) {
+    const ev = Core.stepRun(run, Core.botHeld(run, true), C.STEP);
+    for (const e of ev) trace.push(`${i}:${e.t}${e.row ? ':' + e.row.n : ''}`);
+    if (i % 60 === 0 || run.dead) {
+      trace.push(JSON.stringify({
+        i, ...counters(run), time: run.time, tw: run.twin, gap: run.spawnGap, idx: run.gen.index,
+        rows: run.rows.filter((r) => !r.passed).map((r) => [r.n, r.y, r.ca, r.cb, r.broken]),
+        picks: run.picks.filter((p) => p.y <= run.TY + 60).map((p) => [p.type, p.y, p.g]),
+      }));
+    }
+  }
+  return { trace, gates: run.gates, dead: run.dead };
+}
+
+test('the same seed and inputs play identically at H=640, 720 and 880', () => {
+  let beaten = 0;
+  for (let seed = 1; seed <= 12; seed++) {
+    const base = gameplayTrace(seed, 640, 120 * 240);
+    for (const H of [720, 880]) {
+      const other = gameplayTrace(seed, H, 120 * 240);
+      assert.equal(other.trace.length, base.trace.length, `seed ${seed} H=${H}: trace length`);
+      for (let k = 0; k < base.trace.length; k++) {
+        assert.equal(other.trace[k], base.trace[k], `seed ${seed} H=${H}: first difference at entry ${k}`);
+      }
+    }
+    if (base.gates >= 150 && !base.dead) beaten++;
+  }
+  assert.ok(beaten >= 11, `only ${beaten}/12 seeds beaten`);
+});
+
+test('every row is on screen for the same time before it can touch the twins at 640-880', () => {
+  const previews = (H) => {
+    const run = Core.createRun(3, H);
+    const seen = new Map();
+    const out = [];
+    while (!run.dead && run.gates < 120) {
+      Core.stepRun(run, Core.botHeld(run, false), C.STEP);
+      for (const r of run.rows) {
+        if (!seen.has(r) && r.y + r.h > 0) seen.set(r, run.time);
+        if (seen.has(r) && !r.contactAt && r.y + r.h > run.TY - C.HIT_R) {
+          r.contactAt = run.time;
+          out.push(r.contactAt - seen.get(r));
+        }
+      }
+    }
+    return out;
+  };
+  const base = previews(640);
+  assert.ok(base.length >= 100);
+  const worst = (474 - C.HIT_R) / (580 * C.FEVER_SPEED); // top speed, sped up by fever
+  assert.ok(Math.min(...base) >= worst - C.STEP, 'preview never below the fastest possible approach');
+  for (const H of [720, 880]) assert.deepEqual(previews(H), base, `H=${H}`);
 });
