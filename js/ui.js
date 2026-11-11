@@ -33,11 +33,27 @@
         },
       });
       const e = this.el;
+      /*
+       * Sound buttons share one handler. A click whose screen is already hidden is ignored: a
+       * press can begin on a button that is hidden before the finger lifts (another finger
+       * resumed the game), and some browsers still deliver that click to the hidden button.
+       * A pointer click also lets go of focus, so Space keeps playing instead of toggling.
+       */
+      const soundClick = (screen) => ({
+        click: (ev) => {
+          if (screen().hidden) return;
+          TS.Sfx.init();
+          TS.Sfx.click();
+          handlers.onSound();
+          if (ev && ev.detail > 0 && ev.currentTarget && ev.currentTarget.blur) ev.currentTarget.blur();
+        },
+      });
+      const soundButton = (id, cls, screen) => h('button', { class: 'btn ' + cls, id, type: 'button', on: soundClick(screen) });
       e.canvas = h('canvas', { id: 'cv', 'aria-label': 'Twin Snap playfield' });
 
       e.best = h('span', { class: 'chip', id: 'chipBest' });
       e.gems = h('span', { class: 'chip chip-gem', id: 'chipGems' });
-      e.sound = h('button', { class: 'btn btn-ghost', id: 'btnSound', type: 'button', on: click('onSound') });
+      e.sound = soundButton('btnSound', 'btn-ghost', () => e.menu);
       e.menu = h('section', { class: 'screen', id: 'menu', 'aria-labelledby': 'logo' }, [
         h('h1', { class: 'logo', id: 'logo' }, [
           h('span', { class: 'logo-a', text: 'TWIN' }),
@@ -62,6 +78,7 @@
       e.overBest = h('p', { class: 'over-best' });
       e.overGems = h('p', { class: 'over-gems' });
       e.revive = h('button', { class: 'btn btn-mint', id: 'btnRevive', type: 'button', on: click('onRevive') });
+      e.overSound = soundButton('btnSoundOver', 'btn-line', () => e.over);
       e.over = h('section', { class: 'screen', id: 'over', hidden: true, 'aria-label': 'Run finished' }, [
         h('div', { class: 'card' }, [
           e.overLabel, e.overScore, e.overBest, e.overGems, e.revive,
@@ -69,6 +86,7 @@
           h('div', { class: 'row' }, [
             h('button', { class: 'btn btn-line', id: 'btnShare', type: 'button', text: 'Challenge a friend', on: click('onShare') }),
             h('button', { class: 'btn btn-line', id: 'btnSkins2', type: 'button', text: 'Skins', on: click('onSkins') }),
+            e.overSound,
           ]),
         ]),
         h('p', { class: 'over-tip', text: 'or tap anywhere to go again' }),
@@ -85,13 +103,17 @@
         ]),
       ]);
 
+      // PAUSED and TAP TO RESUME are drawn on the canvas; this layer only adds the sound toggle.
+      e.pauseSound = soundButton('btnSoundPause', 'btn-ghost', () => e.pause);
+      e.pause = h('section', { class: 'screen', id: 'pause', hidden: true, 'aria-label': 'Paused' }, [e.pauseSound]);
+
       e.toast = h('div', { class: 'toast', id: 'toast', role: 'status', hidden: true });
       e.ad = h('div', { class: 'adph', id: 'adph', hidden: true }, [
         h('p', { class: 'adph-title', text: 'Ad break' }),
         h('p', { class: 'adph-note', text: 'Placeholder. A real rewarded ad plays here in the store build.' }),
       ]);
 
-      e.ui = h('div', { class: 'ui' }, [e.menu, e.over, e.shop, e.toast, e.ad]);
+      e.ui = h('div', { class: 'ui' }, [e.menu, e.over, e.shop, e.pause, e.toast, e.ad]);
       e.stage = h('div', { class: 'stage', id: 'stage' }, [e.canvas, e.ui]);
       app.appendChild(e.stage);
 
@@ -110,17 +132,33 @@
       return !this.el.shop.hidden || !this.el.ad.hidden;
     },
 
-    hideAll() {
-      this.el.menu.hidden = true;
-      this.el.over.hidden = true;
-      this.el.shop.hidden = true;
+    /** Hides a screen, first moving keyboard focus off it so Space cannot reach a hidden button. */
+    hide(screen) {
+      const active = doc.activeElement;
+      if (active && active !== screen && screen.contains(active) && active.blur) active.blur();
+      screen.hidden = true;
     },
+
+    hideAll() {
+      [this.el.menu, this.el.over, this.el.shop, this.el.pause].forEach((s) => this.hide(s));
+    },
+
+    /** Shows the same sound state on every sound button. aria-pressed is true while sound is on. */
+    setSound(muted) {
+      [this.el.sound, this.el.overSound, this.el.pauseSound].forEach((b) => {
+        b.textContent = muted ? 'Sound off' : 'Sound on';
+        b.setAttribute('aria-pressed', String(!muted));
+      });
+    },
+
+    showPause() { this.el.pause.hidden = false; },
+    hidePause() { this.hide(this.el.pause); },
 
     showMenu(save) {
       this.hideAll();
       this.el.best.textContent = 'Best ' + save.best;
       this.el.gems.textContent = '◆ ' + save.gems;
-      this.el.sound.textContent = save.muted ? 'Sound off' : 'Sound on';
+      this.setSound(save.muted);
       this.el.menu.hidden = false;
     },
 

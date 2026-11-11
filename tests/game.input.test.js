@@ -2,7 +2,7 @@
 /*
  * Integration tests for input handling in js/game.js.
  * The real scripts are loaded in the order index.html lists them, inside a tiny stand-in for
- * the browser (no rendering, no sound, no storage). Events are fired at the same listeners the
+ * the browser (no rendering or sound; storage is an in-memory map). Events are fired at the same listeners the
  * browser would call, and animation frames are advanced by hand.
  */
 const test = require('node:test');
@@ -15,7 +15,9 @@ const ROOT = path.join(__dirname, '..');
 const SCRIPTS = [...fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8').matchAll(/<script src="([^"]+)"><\/script>/g)]
   .map((m) => m[1]);
 
-function makeWorld() {
+/** @param {{storage?: Map<string, string>}} [opts] share `storage` between worlds to simulate a reload */
+function makeWorld(opts = {}) {
+  const storage = opts.storage || new Map();
   const clock = { t: 1000 };
   const bags = { win: {}, doc: {} };
   const on = (bag) => (type, fn) => { (bag[type] = bag[type] || []).push(fn); };
@@ -30,30 +32,37 @@ function makeWorld() {
     },
     set: () => true,
   });
-  const makeEl = () => {
+  const makeEl = (tag) => {
     const bag = {};
+    const attrs = {};
     return {
-      bag, style: {}, hidden: false, children: [], clientWidth: 360, clientHeight: 640,
+      bag, attrs, tag, style: {}, hidden: false, children: [], clientWidth: 360, clientHeight: 640,
       classList: { toggle() {}, add() {}, remove() {} },
       appendChild(c) { this.children.push(c); return c; },
-      setAttribute() {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
       addEventListener: on(bag),
       getContext: () => ctx2d,
       setPointerCapture() {},
-      closest: () => null,
+      // Buttons and the result card count as controls, like Element.closest('button, .card').
+      closest() { return tag === 'button' || /\bcard\b/.test(attrs.class || '') ? this : null; },
+      contains(x) { return x === this || this.children.some((c) => c.contains && c.contains(x)); },
+      focus() { document.activeElement = this; },
+      blur() { if (document.activeElement === this) document.activeElement = document.body; },
     };
   };
-  const app = makeEl();
+  const app = makeEl('main');
   const document = {
-    hidden: false, readyState: 'complete',
+    hidden: false, readyState: 'complete', body: makeEl('body'), activeElement: null,
     getElementById: (id) => (id === 'app' ? app : null),
     createElement: makeEl,
     addEventListener: on(bags.doc),
   };
+  document.activeElement = document.body;
   const win = {
     document, devicePixelRatio: 1, navigator: {}, location: { href: 'test://twin-snap' },
     performance: { now: () => clock.t },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: (k) => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => { storage.set(k, String(v)); } },
     requestAnimationFrame: (fn) => { win.nextFrame = fn; },
     setTimeout: () => 0, clearTimeout() {},
     addEventListener: on(bags.win),
@@ -67,7 +76,9 @@ function makeWorld() {
   const stage = TS.UI.el.stage;
   const anywhere = { closest: () => null };
   const world = {
-    G, TS, clock,
+    G, TS, clock, storage, document,
+    /** A click as the browser sends it: detail 1 for a pointer click, 0 for keyboard activation. */
+    click(el, detail = 1) { fire(el.bag, 'click', { detail, currentTarget: el, target: el }); },
     tick(n = 1, ms = 16) {
       for (let i = 0; i < n; i++) { drawn.length = 0; clock.t += ms; win.nextFrame(clock.t); }
     },
@@ -619,12 +630,14 @@ test('repeated focus and visibility events are harmless', () => {
   assert.equal(w.G.held, false);
 });
 
-test('menu start and result-card restart begin at once, without a countdown', () => {
+test('menu start and result-card restart begin at once, without a countdown or paused toggle', () => {
+  const noPause = (w) => assert.equal(w.TS.UI.el.pause.hidden, true, 'paused toggle hidden');
   // Menu
   const w = makeWorld();
   w.down(1);
   assert.equal(w.G.mode, 'play');
   assert.equal(w.G.held, true);
+  noPause(w);
   w.up(1);
   // Result card: tap
   w.dieNow();
@@ -632,9 +645,156 @@ test('menu start and result-card restart begin at once, without a countdown', ()
   w.down(2);
   assert.equal(w.G.mode, 'play');
   assert.equal(w.G.held, true);
+  noPause(w);
   w.up(2);
-  // Result card: button
+  // Result card: button, with its sound toggle focused (the restart moves focus off it)
   w.dieNow();
+  w.TS.UI.el.overSound.focus();
   w.TS.UI.handlers.onRetry();
   assert.equal(w.G.mode, 'play');
+  noPause(w);
+  assert.equal(w.document.activeElement, w.document.body);
+});
+
+// ---------- sound toggles on the title, result card and paused screen (M0.4) ----------
+
+const soundButtons = (w) => [w.TS.UI.el.sound, w.TS.UI.el.overSound, w.TS.UI.el.pauseSound];
+function assertSound(w, muted) {
+  assert.equal(w.G.save.muted, muted);
+  assert.equal(w.TS.Sfx.muted, muted);
+  for (const b of soundButtons(w)) {
+    assert.equal(b.textContent, muted ? 'Sound off' : 'Sound on');
+    assert.equal(b.getAttribute('aria-pressed'), String(!muted));
+  }
+}
+const savedMuted = (w) => JSON.parse(w.storage.get('twin-snap-save-v1')).muted;
+const pauseShown = (w) => !w.TS.UI.el.pause.hidden;
+
+test('the title-screen toggle still works and stays on the title', () => {
+  const w = makeWorld();
+  assertSound(w, false);
+  w.click(w.TS.UI.el.sound);
+  assertSound(w, true);
+  assert.equal(savedMuted(w), true);
+  assert.equal(w.G.mode, 'menu');
+  assert.equal(w.TS.UI.el.menu.hidden, false);
+  assert.equal(pauseShown(w), false);
+});
+
+test('the result-card toggle saves, mutes and stays on the result card; a reload keeps it', () => {
+  // Arrange
+  const w = makeWorld();
+  w.startAndRelease();
+  w.dieNow();
+  // Act
+  w.click(w.TS.UI.el.overSound);
+  // Assert: all three buttons agree, nothing changed screen
+  assertSound(w, true);
+  assert.equal(savedMuted(w), true);
+  assert.equal(w.G.mode, 'over');
+  assert.equal(w.TS.UI.el.over.hidden, false);
+  assert.equal(w.TS.UI.el.menu.hidden, true);
+  // A reload with the same storage starts muted
+  assertSound(makeWorld({ storage: w.storage }), true);
+});
+
+test('pressing the result-card toggle cannot restart the run', () => {
+  const w = makeWorld();
+  w.startAndRelease();
+  w.dieNow();
+  w.passLock();
+  const btn = w.TS.UI.el.overSound;
+  w.down(1, { target: btn });
+  w.up(1);
+  w.click(btn);
+  w.keyDown('Space', { target: btn });
+  assert.equal(w.G.mode, 'over');
+  assertSound(w, true);
+});
+
+test('the paused toggle shows only while paused, and pressing it never resumes or holds', () => {
+  const w = pausedWorld();
+  const btn = w.TS.UI.el.pauseSound;
+  assert.equal(pauseShown(w), true);
+  // Act: press, release and click the toggle
+  w.down(1, { target: btn });
+  assert.equal(w.G.mode, 'ready', 'no countdown');
+  assert.equal(w.G.held, false);
+  w.up(1);
+  w.click(btn);
+  assertSound(w, true);
+  assert.equal(w.G.mode, 'ready');
+  assert.equal(pauseShown(w), true);
+  // Act: resume from the playfield
+  w.down(2);
+  assert.equal(w.G.mode, 'count');
+  for (let i = 0; i < 29; i++) {
+    assert.equal(pauseShown(w), false, 'hidden for the whole countdown');
+    w.wait(50);
+  }
+  assert.equal(w.G.mode, 'count');
+  w.wait(50);
+  assert.equal(w.G.mode, 'play', 'GO still at 1.5 s');
+  assert.equal(pauseShown(w), false);
+});
+
+test('a toggle press that ends after the countdown has hidden it does nothing', () => {
+  // Arrange: finger 1 on the toggle, finger 2 resumes from the playfield
+  const w = pausedWorld();
+  const btn = w.TS.UI.el.pauseSound;
+  w.down(1, { target: btn });
+  w.down(2, { isPrimary: false });
+  assert.equal(w.G.mode, 'count');
+  // Act: finger 1 lifts on the now-hidden button, and a browser still delivers its click
+  w.up(1);
+  w.click(btn);
+  // Assert: no sound change, no hold, countdown unaffected
+  assertSound(w, false);
+  assert.equal(w.G.held, false);
+  w.down(3, { isPrimary: false });
+  w.wait(1500);
+  assert.equal(w.G.mode, 'play');
+  assert.equal(w.G.held, true, 'a playfield finger pressed during the countdown still holds');
+  w.up(3);
+  assert.equal(w.G.held, false);
+});
+
+test('focus: a pointer click lets go of the toggle, and hiding it moves focus away', () => {
+  const w = pausedWorld();
+  const btn = w.TS.UI.el.pauseSound;
+  btn.focus();
+  w.click(btn, 1);
+  assert.notEqual(w.document.activeElement, btn);
+  // Keyboard activation keeps focus, and Space on the focused button is not a game press
+  btn.focus();
+  w.click(btn, 0);
+  assert.equal(w.document.activeElement, btn);
+  w.keyDown('Space', { target: btn });
+  assert.equal(w.G.mode, 'ready');
+  // Act: resume from the playfield while the hidden-to-be button has focus
+  w.down(1);
+  assert.equal(w.document.activeElement, w.document.body, 'focus left the hidden button');
+  w.click(btn, 0);
+  assertSound(w, false); // toggled twice above, and the hidden button did nothing
+});
+
+test('interruptions during the countdown and revive both bring the paused toggle back', () => {
+  const w = pausedWorld();
+  w.down(1);
+  assert.equal(pauseShown(w), false);
+  w.blur();
+  w.blur();
+  w.hide();
+  w.show();
+  assert.equal(w.G.mode, 'ready');
+  assert.equal(pauseShown(w), true);
+  // Revive
+  const r = makeWorld();
+  r.startAndRelease();
+  r.dieNow();
+  r.G.save = { ...r.G.save, gems: 50 };
+  r.TS.UI.handlers.onRevive();
+  assert.equal(r.G.mode, 'ready');
+  assert.equal(pauseShown(r), true);
+  assert.equal(r.TS.UI.el.over.hidden, true);
 });

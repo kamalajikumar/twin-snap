@@ -123,6 +123,7 @@
     G.mode = 'ready';
     dropInput();
     UI.hideAll();
+    UI.showPause();
   }
 
   function onPass(e, loud) {
@@ -330,6 +331,7 @@
 
   function beginCountdown() {
     G.mode = 'count';
+    UI.hidePause();
     // The next frame's time is measured from the last frame, not from this tap. Start below zero
     // by the time already gone since that frame, so the countdown runs from the tap itself.
     G.countMs = Math.min(0, G.last - root.performance.now());
@@ -372,6 +374,7 @@
   function interrupt() {
     dropInput();
     if (G.mode === 'play' || G.mode === 'count') G.mode = 'ready';
+    if (G.mode === 'ready') UI.showPause();
     G.countMs = 0;
     G.countDigit = 0;
   }
@@ -458,10 +461,11 @@
         G.overAt = root.performance.now();
       } else UI.showMenu(G.save);
     },
+    /** Shared by the title, result-card and paused sound buttons. Never changes the screen. */
     onSound() {
       G.save = Store.update(G.save, { muted: !G.save.muted });
       Sfx.muted = G.save.muted;
-      UI.showMenu(G.save);
+      UI.setSound(G.save.muted);
     },
     onRetry: startRun,
     onShare: share,
@@ -481,6 +485,7 @@
 
   function boot() {
     const e = UI.mount(doc.getElementById('app'), handlers);
+    UI.setSound(G.save.muted);
     G.ctx = e.canvas.getContext('2d');
     for (let i = 0; i < 34; i++) {
       G.streaks.push({ x: Math.random() * C.W, y: Math.random() * 900, z: 0.2 + Math.random() * 0.8 });
