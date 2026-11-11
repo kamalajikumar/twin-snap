@@ -14,12 +14,13 @@
   const skinOf = (save) => CFG.SKINS.find((s) => s.id === save.skin) || CFG.SKINS[0];
   const newSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
   const PHONE_ASPECT = 0.5625; // 9:16, width / height of the playfield column on wide screens
+  const opened = Store.open();
 
   const G = {
     mode: 'menu', // menu (demo plays) | play | ready (paused) | count (3-2-1 to resume) | dying | over
     countMs: 0, countDigit: 0, // time spent in the resume countdown, and the number on screen
     ctx: null, dpr: 1, scale: 1, H: 640,
-    run: null, held: false, save: Store.load(), skin: null,
+    run: null, held: false, save: opened.save, skin: null,
     theme: cloneTheme(THEMES[0]), themeIdx: 0, lvl: 0,
     streaks: [], trail: [], flow: 0, scroll: 0, time: 0, last: 0, acc: 0,
     shake: 0, flash: 0, squash: 0, scorePop: 0, gemPop: 0, hitstop: 0, hint: '',
@@ -29,6 +30,65 @@
   };
   G.skin = skinOf(G.save);
   Sfx.muted = G.save.muted;
+
+  // ---------- saving ----------
+  const SAVE_NOTES = {
+    unavailable: "Progress can't be saved in this browser mode.",
+    failed: "Progress isn't being saved: storage is full or blocked.",
+    recovered: 'Your save was damaged. A copy was kept and progress was reset.',
+    protected: "Your save is damaged and couldn't be backed up, so nothing will be saved this session.",
+  };
+  const problemOf = (reason) => (reason === 'unavailable' ? SAVE_NOTES.unavailable : SAVE_NOTES.failed);
+  const saveState = {
+    // Session-long: the save was damaged and nothing will be written.
+    protected: opened.status === 'corrupt-protected',
+    // Session-long and informational: the save was damaged, backed up and reset.
+    recovered: opened.status === 'corrupt-recovered',
+    // Saving is not working right now (blocked storage, or the startup write test failed, also
+    // on top of a recovery); cleared by the next successful save.
+    problem: opened.status === 'unavailable' ? problemOf('unavailable') : opened.reason ? problemOf(opened.reason) : null,
+  };
+  // One toast per session for a save failure the player has not already been told about.
+  saveState.warned = saveState.problem !== null;
+
+  /** The one save notice to show, in priority order. A current failure keeps the recovery visible. */
+  function saveNotice() {
+    if (saveState.protected) return SAVE_NOTES.protected;
+    if (saveState.problem && saveState.recovered) return saveState.problem + ' ' + SAVE_NOTES.recovered;
+    if (saveState.problem) return saveState.problem;
+    if (saveState.recovered) return SAVE_NOTES.recovered;
+    return null;
+  }
+
+  function showSaveNote() {
+    UI.setSaveNote(saveNotice());
+  }
+
+  function afterWrite(r) {
+    if (r.ok) saveState.problem = null;
+    else if (r.reason !== 'protected') {
+      saveState.problem = problemOf(r.reason);
+      if (!saveState.warned) UI.toast(saveState.problem);
+      saveState.warned = true;
+    }
+    showSaveNote();
+  }
+
+  /** Saves a change that is kept in memory even if it cannot be saved (progress, settings). */
+  function save(patch) {
+    const r = Store.write(G.save, patch);
+    G.save = r.save;
+    afterWrite(r);
+    return r.ok;
+  }
+
+  /** Saves a purchase: G.save only changes if the new save was actually written. */
+  function savePaid(patch) {
+    const r = Store.write(G.save, patch);
+    afterWrite(r);
+    if (r.ok) G.save = r.save;
+    return r.ok;
+  }
 
   function resize() {
     const app = doc.getElementById('app');
@@ -114,7 +174,7 @@
     G.banked = run.gems;
     const prevBest = G.save.best;
     const isBest = run.score > prevBest;
-    G.save = Store.update(G.save, {
+    save({
       best: Math.max(prevBest, run.score),
       bestGates: Math.max(G.save.bestGates, run.gates),
       gems: G.save.gems + earned,
@@ -449,10 +509,15 @@
     const skin = CFG.SKINS.find((s) => s.id === id);
     if (!skin) return;
     if (G.save.owned.includes(id)) {
-      G.save = Store.update(G.save, { skin: id });
+      save({ skin: id });
       Sfx.click();
     } else if (G.save.gems >= skin.cost) {
-      G.save = Store.update(G.save, { gems: G.save.gems - skin.cost, owned: G.save.owned.concat(id), skin: id });
+      // All or nothing: no gems spent and no skin granted unless the purchase is saved.
+      if (!savePaid({ gems: G.save.gems - skin.cost, owned: G.save.owned.concat(id), skin: id })) {
+        UI.toast("Couldn't save, so the purchase was cancelled.");
+        UI.showShop(G.save);
+        return;
+      }
       Sfx.buy();
       UI.toast(skin.name + ' unlocked');
     } else {
@@ -477,7 +542,7 @@
     },
     /** Shared by the title, result-card and paused sound buttons. Never changes the screen. */
     onSound() {
-      G.save = Store.update(G.save, { muted: !G.save.muted });
+      save({ muted: !G.save.muted });
       Sfx.muted = G.save.muted;
       UI.setSound(G.save.muted);
     },
@@ -487,7 +552,7 @@
     onRevive() {
       if (G.mode !== 'over' || G.revived) return;
       if (G.save.gems >= CFG.REVIVE_COST) {
-        G.save = Store.update(G.save, { gems: G.save.gems - CFG.REVIVE_COST });
+        save({ gems: G.save.gems - CFG.REVIVE_COST }); // revive rules are unchanged until M0.6c
         revive();
         return;
       }
@@ -500,6 +565,7 @@
   function boot() {
     const e = UI.mount(doc.getElementById('app'), handlers);
     UI.setSound(G.save.muted);
+    showSaveNote();
     G.ctx = e.canvas.getContext('2d');
     for (let i = 0; i < 34; i++) {
       G.streaks.push({ x: Math.random() * C.W, y: Math.random() * 900, z: 0.2 + Math.random() * 0.8 });

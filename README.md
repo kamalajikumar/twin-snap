@@ -26,13 +26,16 @@ No build step and no dependencies: open `index.html` in a browser.
 | `tests/core.test.js` | Logic tests, including an autopilot that proves levels are beatable. |
 | `tests/input.test.js` | Input-state tests: multi-touch, duplicates, interruptions. |
 | `tests/game.input.test.js` | Runs the real scripts in a stand-in browser and fires input events at them. |
+| `tests/store.test.js` | Save storage: load and write status, corrupt-save backup, failure injection. |
+| `tests/game.save.test.js` | What the player sees and keeps when saving fails. |
+| `tests/helpers/world.js` | The shared stand-in browser and fake storage used by the game tests. |
 | `tools/humansim.js` | Simulated imperfect players, used to tune difficulty. |
 | `tools/bundle.js` | Packs everything into one HTML file. |
 
 ## Commands
 
 ```bash
-node --test tests/core.test.js tests/input.test.js tests/game.input.test.js
+node --test tests/core.test.js tests/input.test.js tests/game.input.test.js tests/store.test.js tests/game.save.test.js
 node tools/humansim.js ../js/core.js
 node tools/bundle.js
 ```

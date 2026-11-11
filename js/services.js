@@ -21,24 +21,136 @@
     };
   }
 
-  // Storage can be missing or blocked (private tabs, embedded previews): the game still runs.
+  /*
+   * Save storage. Storage can be missing, blocked, full or hold a damaged save (private tabs,
+   * embedded previews, old data). The game always runs; these functions say exactly what
+   * happened so the game can tell the player and never report a save that did not happen.
+   */
+  const BACKUP_KEY = KEY + '.bak';
+  const PROBE_KEY = 'twin-snap-probe'; // temporary, never the save or the backup
+  const state = { protected: false, probeLeft: false };
+
+  /** Classifies a storage exception: 'quota' (full), 'unavailable' (blocked) or 'error'. */
+  function reasonOf(err) {
+    const name = err && err.name;
+    const code = err && err.code;
+    if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || code === 22 || code === 1014) return 'quota';
+    if (name === 'SecurityError') return 'unavailable';
+    return 'error';
+  }
+
+  const storage = () => root.localStorage; // the getter itself throws when storage is blocked
+
+  /**
+   * Copies a corrupt save to BACKUP_KEY and confirms it. Any existing backup, even an identical
+   * one, counts as a failure: it is never replaced, and the corrupt original is then kept too.
+   */
+  function backUp(ls, raw) {
+    if (ls.getItem(BACKUP_KEY) !== null) return false;
+    ls.setItem(BACKUP_KEY, raw);
+    if (ls.getItem(BACKUP_KEY) === raw) return true;
+    ls.removeItem(BACKUP_KEY); // our own copy is wrong: do not leave it looking like a backup
+    return false;
+  }
+
+  /** Writes and removes PROBE_KEY. Returns null if writing works, else the failure reason. */
+  function probe(ls) {
+    try {
+      ls.setItem(PROBE_KEY, '1');
+    } catch (err) {
+      return reasonOf(err);
+    }
+    removeProbe(ls);
+    return null;
+  }
+
+  function removeProbe(ls) {
+    try {
+      ls.removeItem(PROBE_KEY);
+      state.probeLeft = false;
+    } catch (err) {
+      state.probeLeft = true; // retried before every later write
+    }
+  }
+
+  /** Reads the raw save, or null if there is none. Throws when storage is blocked. */
+  function readRaw() {
+    return storage().getItem(KEY);
+  }
+
+  /** The save in `raw`, or undefined if it is not a JSON object. */
+  function parse(raw) {
+    try {
+      const d = JSON.parse(raw);
+      return d && typeof d === 'object' && !Array.isArray(d) ? d : undefined;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
+  /** Recovers from a corrupt save: backed up and writable, or protected for the session. */
+  function openCorrupt(ls, raw) {
+    let ok = false;
+    try {
+      ok = backUp(ls, raw);
+    } catch (err) {
+      ok = false;
+    }
+    if (ok) return 'corrupt-recovered';
+    state.protected = true;
+    return 'corrupt-protected';
+  }
+
   TS.Store = {
-    load() {
+    KEYS: Object.freeze({ save: KEY, backup: BACKUP_KEY, probe: PROBE_KEY }),
+
+    /**
+     * Loads the save once at startup and checks that storage can be written.
+     * @returns {{save: object, status: 'ok'|'new'|'unavailable'|'readonly'|'corrupt-recovered'|'corrupt-protected',
+     *   reason?: string, probe?: 'left'}} the save to play with and what was found. `reason` is set
+     *   when the startup write test failed ('readonly', or 'corrupt-recovered' on top of a recovery).
+     */
+    open() {
+      let ls;
+      let raw;
       try {
-        return sanitize(JSON.parse(root.localStorage.getItem(KEY)));
+        ls = storage();
+        raw = readRaw();
       } catch (err) {
-        return sanitize(DEFAULTS);
+        return { save: sanitize(DEFAULTS), status: 'unavailable' };
       }
+      let status = raw === null ? 'new' : 'ok';
+      let data = raw === null ? DEFAULTS : parse(raw);
+      if (data === undefined) {
+        status = openCorrupt(ls, raw);
+        data = DEFAULTS;
+      }
+      const out = { save: sanitize(data), status };
+      if (!state.protected) {
+        const failed = probe(ls);
+        if (failed) Object.assign(out, { status: status === 'corrupt-recovered' ? status : 'readonly', reason: failed });
+      }
+      if (state.probeLeft) out.probe = 'left';
+      return out;
     },
-    /** Returns a new save object with `patch` applied; never mutates `save`. */
-    update(save, patch) {
+
+    /**
+     * Saves `save` with `patch` applied. Never mutates `save`.
+     * @returns {{ok: boolean, save: object, reason?: 'quota'|'unavailable'|'protected'|'error', probe?: 'left'}}
+     *   ok is true only if the new save was written. On failure `save` is the unsaved result, for
+     *   callers that keep progress in memory; callers making a purchase must discard it.
+     */
+    write(save, patch) {
       const next = sanitize({ ...save, ...patch });
+      if (state.protected) return { ok: false, save: next, reason: 'protected' };
       try {
-        root.localStorage.setItem(KEY, JSON.stringify(next));
+        const ls = storage();
+        if (state.probeLeft) removeProbe(ls);
+        ls.setItem(KEY, JSON.stringify(next));
       } catch (err) {
-        /* progress simply lasts for this visit */
+        return { ok: false, save: next, reason: reasonOf(err) };
       }
-      return next;
+      return state.probeLeft ? { ok: true, save: next, probe: 'left' } : { ok: true, save: next };
     },
   };
 

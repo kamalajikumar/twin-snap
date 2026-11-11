@@ -54,6 +54,10 @@
       e.best = h('span', { class: 'chip', id: 'chipBest' });
       e.gems = h('span', { class: 'chip chip-gem', id: 'chipGems' });
       e.sound = soundButton('btnSound', 'btn-ghost', () => e.menu);
+      // Says when progress is not being saved; the same text on the title and the result card.
+      const saveNote = () => h('p', { class: 'save-note', role: 'status', hidden: true });
+      e.saveNoteMenu = saveNote();
+      e.saveNoteOver = saveNote();
       e.menu = h('section', { class: 'screen', id: 'menu', 'aria-labelledby': 'logo' }, [
         h('h1', { class: 'logo', id: 'logo' }, [
           h('span', { class: 'logo-a', text: 'TWIN' }),
@@ -66,6 +70,7 @@
         ]),
         h('div', { class: 'group' }, [
           h('div', { class: 'chips' }, [e.best, e.gems]),
+          e.saveNoteMenu,
           h('div', { class: 'row' }, [
             h('button', { class: 'btn btn-ghost', id: 'btnSkins', type: 'button', text: 'Skins', on: click('onSkins') }),
             e.sound,
@@ -81,7 +86,7 @@
       e.overSound = soundButton('btnSoundOver', 'btn-line', () => e.over);
       e.over = h('section', { class: 'screen', id: 'over', hidden: true, 'aria-label': 'Run finished' }, [
         h('div', { class: 'card' }, [
-          e.overLabel, e.overScore, e.overBest, e.overGems, e.revive,
+          e.overLabel, e.overScore, e.overBest, e.overGems, e.saveNoteOver, e.revive,
           h('button', { class: 'btn btn-sun', id: 'btnRetry', type: 'button', text: 'Play again', on: click('onRetry') }),
           h('div', { class: 'row' }, [
             h('button', { class: 'btn btn-line', id: 'btnShare', type: 'button', text: 'Challenge a friend', on: click('onShare') }),
@@ -148,6 +153,14 @@
       [this.el.sound, this.el.overSound, this.el.pauseSound].forEach((b) => {
         b.textContent = muted ? 'Sound off' : 'Sound on';
         b.setAttribute('aria-pressed', String(!muted));
+      });
+    },
+
+    /** @param {string|null} text why progress is not being saved, or null to hide the note */
+    setSaveNote(text) {
+      [this.el.saveNoteMenu, this.el.saveNoteOver].forEach((p) => {
+        p.textContent = text || '';
+        p.hidden = !text;
       });
     },
 

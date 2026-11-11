@@ -13,9 +13,45 @@ const ROOT = path.join(__dirname, '..', '..');
 const SCRIPTS = [...fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8').matchAll(/<script src="([^"]+)"><\/script>/g)]
   .map((m) => m[1]);
 
+/** An error shaped like the DOMExceptions browsers throw from localStorage. */
+const domError = (name, code) => Object.assign(new Error(name), { name, code });
+
 /**
- * @param {{storage?: Map<string, string>, viewport?: [number, number]}} [opts]
- *   storage: share between worlds to simulate a reload. viewport: CSS width and height of #app.
+ * localStorage backed by `map`, with switchable failures for failure-injection tests.
+ * Set `fail.get`, `fail.set` or `fail.remove` to an error (or to a function of the key that
+ * returns an error or null) to make that call throw. `map` is shared, so two calls with the same
+ * map behave like one browser profile.
+ */
+function fakeStorage(map = new Map()) {
+  const fail = { get: null, set: null, remove: null };
+  const check = (kind, key) => {
+    const f = typeof fail[kind] === 'function' ? fail[kind](key) : fail[kind];
+    if (f) throw f;
+  };
+  return {
+    map, fail,
+    getItem(k) { check('get', k); return map.has(k) ? map.get(k) : null; },
+    setItem(k, v) { check('set', k); map.set(k, String(v)); },
+    removeItem(k) { check('remove', k); map.delete(k); },
+  };
+}
+
+/**
+ * Makes `window.localStorage` a getter that calls `get`, as a browser that blocks storage does.
+ * A getter only runs inside a vm context when it is defined on the context's own global, and
+ * `self` must point at that global (as `self === window` in a browser).
+ */
+function blockStorage(ctx, get) {
+  ctx.__lsGet = get;
+  vm.runInContext('Object.defineProperty(globalThis, "localStorage", { get: __lsGet, configurable: true });'
+    + ' self = globalThis; delete globalThis.__lsGet;', ctx);
+}
+
+/**
+ * @param {{storage?: Map<string, string>, localStorage?: object|Function, viewport?: [number, number]}} [opts]
+ *   storage: share between worlds to simulate a reload. localStorage: a fakeStorage() to inject
+ *   failures, or a function used as the window.localStorage getter (it may throw, as a blocked
+ *   browser does). viewport: CSS width and height of #app.
  */
 function makeWorld(opts = {}) {
   const storage = opts.storage || new Map();
@@ -64,13 +100,14 @@ function makeWorld(opts = {}) {
   const win = {
     document, devicePixelRatio: 1, navigator: {}, location: { href: 'test://twin-snap' },
     performance: { now: () => clock.t },
-    localStorage: { getItem: (k) => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => { storage.set(k, String(v)); } },
     requestAnimationFrame: (fn) => { win.nextFrame = fn; },
     setTimeout: () => 0, clearTimeout() {},
     addEventListener: on(bags.win),
   };
+  if (typeof opts.localStorage !== 'function') win.localStorage = opts.localStorage || fakeStorage(storage);
   win.self = win;
   vm.createContext(win);
+  if (typeof opts.localStorage === 'function') blockStorage(win, opts.localStorage);
   for (const src of SCRIPTS) vm.runInContext(fs.readFileSync(path.join(ROOT, src), 'utf8'), win, { filename: src });
 
   const TS = win.TS;
@@ -139,4 +176,4 @@ function pausedWorld(opts) {
   return w;
 }
 
-module.exports = { SCRIPTS, makeWorld, pausedWorld };
+module.exports = { ROOT, SCRIPTS, makeWorld, pausedWorld, fakeStorage, domError, blockStorage };

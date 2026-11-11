@@ -91,6 +91,8 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .chip-gem { color: var(--sun); }
+.save-note { margin: 0; max-width: 30ch; font-size: 14px; font-weight: 600; color: var(--sun); text-shadow: 0 2px 0 var(--ink); }
+.card .save-note { color: var(--coral); text-shadow: none; }
 .start {
   margin: 0;
   font-family: var(--font-display);
