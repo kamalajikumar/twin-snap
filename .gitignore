@@ -1,0 +1,5 @@
+# generated single-file bundle (node tools/bundle.js)
+twin-snap-single.html
+# wrapper page used only for the Claude preview link
+artifact.html
+node_modules/
