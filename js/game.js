@@ -15,7 +15,8 @@
   const newSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
 
   const G = {
-    mode: 'menu', // menu (demo plays) | play | ready (paused) | dying | over
+    mode: 'menu', // menu (demo plays) | play | ready (paused) | count (3-2-1 to resume) | dying | over
+    countMs: 0, countDigit: 0, // time spent in the resume countdown, and the number on screen
     ctx: null, dpr: 1, scale: 1, H: 640,
     run: null, held: false, save: Store.load(), skin: null,
     theme: cloneTheme(THEMES[0]), themeIdx: 0, lvl: 0,
@@ -306,6 +307,7 @@
     }
     ambient(sdt, dt);
     Fx.update(sdt);
+    if (G.mode === 'count') tickCountdown(dt); // after stepping, so the sim starts on the next frame
     G.heldLook = G.mode === 'play' ? G.held : !!G.eyes;
     Render.draw(G);
     root.requestAnimationFrame(frame);
@@ -322,13 +324,38 @@
     G.held = false;
   }
 
+  // ---------- resume countdown ----------
+  // The simulation only steps in 'play', so it stays frozen while counting.
+  const countdownMs = () => CFG.COUNTDOWN_STEPS * CFG.COUNTDOWN_STEP_MS;
+
+  function beginCountdown() {
+    G.mode = 'count';
+    // The next frame's time is measured from the last frame, not from this tap. Start below zero
+    // by the time already gone since that frame, so the countdown runs from the tap itself.
+    G.countMs = Math.min(0, G.last - root.performance.now());
+    G.countDigit = CFG.COUNTDOWN_STEPS;
+  }
+
+  /** Advances the countdown by one frame's real time; at GO, presses still down start holding. */
+  function tickCountdown(dt) {
+    G.countMs += dt * 1000;
+    if (G.countMs >= countdownMs()) {
+      G.mode = 'play';
+      G.countDigit = 0;
+      syncHeld();
+      return;
+    }
+    const elapsed = Math.max(0, G.countMs);
+    G.countDigit = CFG.COUNTDOWN_STEPS - Math.floor(elapsed / CFG.COUNTDOWN_STEP_MS);
+  }
+
   function onDown(id, primary) {
     Sfx.init();
     const locked = G.mode === 'over' && root.performance.now() - G.overAt <= CFG.OVER_LOCK_MS;
     const r = Input.down(input, id, { mode: G.mode, modal: UI.modalOpen(), locked, primary });
     if (r.action === 'start') startRun();
-    else if (r.action === 'resume') G.mode = 'play';
-    else if (r.action === 'hold' && r.first) Sfx.press();
+    else if (r.action === 'resume') beginCountdown();
+    else if (r.action === 'hold' && r.first && G.mode === 'play') Sfx.press();
     input = r.state; // after startRun(), which drops older holds
     syncHeld();
   }
@@ -338,10 +365,15 @@
     syncHeld();
   }
 
-  /** Focus or visibility was lost: drop the hold and pause, so the run cannot go on unattended. */
+  /**
+   * Focus or visibility was lost: drop every hold and pause, so the run cannot go on unattended.
+   * A countdown in progress is cancelled; resuming needs a new tap and a full countdown.
+   */
   function interrupt() {
     dropInput();
-    if (G.mode === 'play') G.mode = 'ready';
+    if (G.mode === 'play' || G.mode === 'count') G.mode = 'ready';
+    G.countMs = 0;
+    G.countDigit = 0;
   }
 
   const onControl = (target) => !!(target && target.closest && target.closest('button, .card'));

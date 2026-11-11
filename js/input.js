@@ -33,19 +33,22 @@
    * @param {{ids: readonly string[]}} state
    * @param {string} id from pointerId() or keyId()
    * @param {{mode: string, modal?: boolean, locked?: boolean, primary?: boolean}} ctx
-   *   mode: current game mode. modal: a dialog covers the game. locked: the result card has only
-   *   just appeared. primary: the browser says no other pointer of this kind is down.
+   *   mode: current game mode ('count' is the resume countdown). modal: a dialog covers the
+   *   game. locked: the result card has only just appeared. primary: the browser says no other
+   *   pointer of this kind is down.
    * @returns {{state: object, action: 'ignore'|'hold'|'start'|'resume', first: boolean}}
    *   action tells the game what the press means; first is true when it began a new hold.
    */
   function down(state, id, ctx) {
     const c = ctx || {};
     if (c.modal) return ignored(state);
-    // Starting or resuming always begins from this one press: nothing older carries over.
+    // Starting always begins from this one press: nothing older carries over.
     if (c.mode === 'menu') return { state: make([id]), action: 'start', first: true };
     if (c.mode === 'over') return c.locked ? ignored(state) : { state: make([id]), action: 'start', first: true };
-    if (c.mode === 'ready') return { state: make([id]), action: 'resume', first: true };
-    if (c.mode !== 'play') return ignored(state);
+    // The resume tap only starts the countdown. It is never a hold, even if it stays down.
+    if (c.mode === 'ready') return { state: EMPTY, action: 'resume', first: false };
+    // During the countdown, fresh presses are recorded so they can hold at GO.
+    if (c.mode !== 'play' && c.mode !== 'count') return ignored(state);
 
     // A primary pointer means no other pointer is really down, so any pointer still on record
     // lost its "up" event. Forget those, or the twins would stay split for good.

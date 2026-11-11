@@ -114,21 +114,47 @@ test('presses are ignored while dying, under a dialog, or right after the result
   }
 });
 
-test('starting or resuming begins from that one press, nothing older carries over', () => {
+test('starting begins from that one press, nothing older carries over', () => {
   // Arrange: stale holds left over from a previous run
   const stale = holding(A, SPACE);
-  for (const [ctx, action] of [
-    [{ mode: 'menu' }, 'start'],
-    [{ mode: 'over', locked: false }, 'start'],
-    [{ mode: 'ready' }, 'resume'],
-  ]) {
+  for (const ctx of [{ mode: 'menu' }, { mode: 'over', locked: false }]) {
     // Act
     const r = Input.down(stale, B, ctx);
     // Assert
-    assert.equal(r.action, action);
+    assert.equal(r.action, 'start');
     assert.deepEqual([...r.state.ids], [B]);
     assert.equal(Input.isHeld(Input.up(r.state, B)), false, 'one up releases');
   }
+});
+
+test('the resume press is never recorded, and stale holds are dropped', () => {
+  // Arrange
+  const stale = holding(A, SPACE);
+  // Act
+  const r = Input.down(stale, B, { mode: 'ready' });
+  // Assert
+  assert.equal(r.action, 'resume');
+  assert.equal(r.first, false);
+  assert.equal(Input.isHeld(r.state), false);
+  assert.equal(Input.up(r.state, B), r.state, 'its later release changes nothing');
+});
+
+test('fresh presses during the countdown are recorded and released like in play', () => {
+  const count = { mode: 'count' };
+  // Act
+  const r = Input.down(Input.create(), B, count);
+  // Assert
+  assert.equal(r.action, 'hold');
+  assert.equal(Input.isHeld(r.state), true);
+  assert.equal(Input.isHeld(Input.up(r.state, B)), false);
+  const two = Input.down(r.state, SPACE, count).state;
+  assert.equal(Input.isHeld(Input.up(two, B)), true, 'key and finger stay independent');
+});
+
+test('a primary press during the countdown also clears pointers whose up was lost', () => {
+  const stuck = Input.down(Input.create(), A, { mode: 'count' }).state;
+  const pressed = Input.down(stuck, B, { mode: 'count', primary: true });
+  assert.deepEqual([...pressed.state.ids], [B]);
 });
 
 test('states are immutable', () => {
