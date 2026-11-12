@@ -28,17 +28,47 @@ No build step and no dependencies: open `index.html` in a browser.
 | `tests/game.input.test.js` | Runs the real scripts in a stand-in browser and fires input events at them. |
 | `tests/store.test.js` | Save storage: load and write status, corrupt-save backup, failure injection. |
 | `tests/game.save.test.js` | What the player sees and keeps when saving fails. |
-| `tests/helpers/world.js` | The shared stand-in browser and fake storage used by the game tests. |
+| `tests/game.tabs.test.js` | Several open tabs sharing one save. |
+| `tests/helpers/world.js` | The shared stand-in browser, fake storage and multi-tab event bus used by the tests. |
 | `tools/humansim.js` | Simulated imperfect players, used to tune difficulty. |
 | `tools/bundle.js` | Packs everything into one HTML file. |
 
 ## Commands
 
 ```bash
-node --test tests/core.test.js tests/input.test.js tests/game.input.test.js tests/store.test.js tests/game.save.test.js
+node --test tests/core.test.js tests/input.test.js tests/game.input.test.js tests/store.test.js tests/game.save.test.js tests/game.tabs.test.js
 node tools/humansim.js ../js/core.js
 node tools/bundle.js
 ```
+
+## Saving and several open tabs
+
+Progress is saved in `localStorage` under `twin-snap-save-v1`. Each save carries `rev`, a write
+counter (older saves have none and read as 0).
+
+A tab never writes its own copy of the save. It re-reads the latest stored save and applies its
+change to it: a finished run adds its gems and keeps the higher best score, a purchase is checked
+against the latest balance, and so on. Changes that cannot be saved yet stay queued in that tab and
+are applied, once, by its next successful save. When another tab saves, open tabs re-read the save
+and update what they show.
+
+What this guarantees:
+
+- A tab that has not seen another tab's changes cannot undo them by writing an old copy.
+- The best score and owned skins never go down; a skin is never charged twice.
+- A purchase is saved completely or not at all.
+- Damaged save data is never overwritten; a tab that finds it says so and keeps playing.
+
+What it cannot guarantee: `localStorage` has no atomic compare-and-swap.
+
+- **Race detected before writing.** Just before writing, a tab re-reads the save. If another tab
+  wrote in the meantime, it starts again from the new save (up to three attempts), so nothing is
+  lost.
+- **Race after the final check.** If another tab writes after that last re-read and before this
+  tab's write lands, this tab's write replaces it and that other change is lost. It needs two
+  writes within moments of each other, and cannot be prevented without a browser lock.
+
+A tab running an older build still writes its whole copy and can overwrite newer progress.
 
 ## Status
 

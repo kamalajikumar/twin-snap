@@ -37,6 +37,7 @@
     failed: "Progress isn't being saved: storage is full or blocked.",
     recovered: 'Your save was damaged. A copy was kept and progress was reset.',
     protected: "Your save is damaged and couldn't be backed up, so nothing will be saved this session.",
+    damaged: 'Your save data is damaged. This tab cannot safely update your progress.',
   };
   const problemOf = (reason) => (reason === 'unavailable' ? SAVE_NOTES.unavailable : SAVE_NOTES.failed);
   const saveState = {
@@ -47,6 +48,9 @@
     // Saving is not working right now (blocked storage, or the startup write test failed, also
     // on top of a recovery); cleared by the next successful save.
     problem: opened.status === 'unavailable' ? problemOf('unavailable') : opened.reason ? problemOf(opened.reason) : null,
+    // The stored save became damaged after startup (found through another tab or a refused
+    // write): this tab will not overwrite it. Cleared once a valid save is read or written.
+    damaged: false,
   };
   // One toast per session for a save failure the player has not already been told about.
   saveState.warned = saveState.problem !== null;
@@ -54,6 +58,7 @@
   /** The one save notice to show, in priority order. A current failure keeps the recovery visible. */
   function saveNotice() {
     if (saveState.protected) return SAVE_NOTES.protected;
+    if (saveState.damaged) return SAVE_NOTES.damaged;
     if (saveState.problem && saveState.recovered) return saveState.problem + ' ' + SAVE_NOTES.recovered;
     if (saveState.problem) return saveState.problem;
     if (saveState.recovered) return SAVE_NOTES.recovered;
@@ -64,9 +69,22 @@
     UI.setSaveNote(saveNotice());
   }
 
+  // Not storage failures: protected is already explained, rejected wrote nothing on purpose, and
+  // busy means another tab kept writing (the change is kept and saved with the next write).
+  const QUIET_FAILURES = ['protected', 'rejected', 'busy'];
+
+  /** The stored save is damaged (or valid again); tells the player once when it becomes damaged. */
+  function setDamaged(damaged) {
+    if (damaged && !saveState.damaged) UI.toast(SAVE_NOTES.damaged);
+    saveState.damaged = damaged;
+  }
+
   function afterWrite(r) {
-    if (r.ok) saveState.problem = null;
-    else if (r.reason !== 'protected') {
+    if (r.ok) {
+      saveState.problem = null;
+      setDamaged(false);
+    } else if (r.reason === 'conflict') setDamaged(true); // damaged data, not a storage failure
+    else if (!QUIET_FAILURES.includes(r.reason)) {
       saveState.problem = problemOf(r.reason);
       if (!saveState.warned) UI.toast(saveState.problem);
       saveState.warned = true;
@@ -74,20 +92,87 @@
     showSaveNote();
   }
 
-  /** Saves a change that is kept in memory even if it cannot be saved (progress, settings). */
-  function save(patch) {
-    const r = Store.write(G.save, patch);
-    G.save = r.save;
-    afterWrite(r);
-    return r.ok;
+  /*
+   * Ordinary changes (progress and settings) that could not be saved yet. They are plain data
+   * (see Store's change()), applied to G.save once, and replayed onto the latest stored save by
+   * the next write. They are removed only after a successful write. Purchases never go here.
+   */
+  let pending = [];
+
+  /**
+   * Takes on what is saved now: the sound setting and the chosen skin may have changed elsewhere.
+   * G.skin is what the twins are drawn with. A run keeps the skin it started with (through pause,
+   * death and revive); a skin chosen elsewhere is shown on the title screen at once and otherwise
+   * from the next run (startRun). Cosmetic only.
+   */
+  function adoptSave(save) {
+    G.save = save;
+    if (G.mode === 'menu') G.skin = skinOf(G.save);
+    Sfx.muted = G.save.muted;
+    UI.setSound(G.save.muted);
   }
 
-  /** Saves a purchase: G.save only changes if the new save was actually written. */
-  function savePaid(patch) {
-    const r = Store.write(G.save, patch);
+  /** Saves an ordinary change, keeping it in memory and in the queue if it cannot be saved. */
+  function commit(change) {
+    const c = Object.freeze({ ...change });
+    const changes = pending.concat([c]);
+    const r = Store.apply(changes);
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    } else {
+      pending = changes; // each change exactly once, in order
+      adoptSave(Store.project(G.save, [c]).save);
+    }
     afterWrite(r);
-    if (r.ok) G.save = r.save;
-    return r.ok;
+    return r;
+  }
+
+  /** Tries to save the queued changes on their own (another tab just saved, so storage may work). */
+  function flushPending() {
+    const r = Store.apply(pending);
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    }
+    afterWrite(r);
+  }
+
+  /**
+   * Another tab changed storage. event.newValue is not trusted: the save is re-read and checked.
+   * A valid save (or a deleted one, which reads as defaults, as a reload would) replaces ours,
+   * with our unsaved changes replayed on top. Damaged data is reported and otherwise ignored: we
+   * keep what we have, and our writes refuse to replace it. Unreadable storage changes nothing.
+   */
+  function onStorage(e) {
+    if (e.key !== null && e.key !== Store.KEYS.save) return;
+    const r = Store.read();
+    if (r.unprotected) saveState.protected = false;
+    if (r.reason === 'corrupt') setDamaged(true);
+    if (r.ok) {
+      setDamaged(false);
+      adoptSave(Store.project(r.save, pending).save);
+      if (pending.length) flushPending(); // once; with an empty queue nothing is written back
+      if (G.overData) G.overData = { ...G.overData, gems: G.save.gems };
+      UI.refreshSave(G.save, G.overData);
+    }
+    showSaveNote();
+  }
+
+  /**
+   * Saves a purchase on top of the queued changes. G.save changes only if the write succeeds;
+   * if it is refused or fails, nothing is charged or granted and the queue is kept as it was.
+   */
+  function commitPaid(change) {
+    const r = Store.apply(pending.concat([Object.freeze({ ...change })]));
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    } else if (r.reason === 'rejected') {
+      adoptSave(Store.project(r.latest, pending).save); // show the balance it was checked against
+    }
+    afterWrite(r);
+    return r;
   }
 
   function resize() {
@@ -146,6 +231,7 @@
 
   function startRun() {
     dropInput(); // a new run never inherits a hold; the press that starts it is added afterwards
+    G.skin = skinOf(G.save); // a run starts with the skin chosen now, and keeps it
     resetRunState();
     G.run = Core.createRun(newSeed(), G.H);
     G.mode = 'play';
@@ -174,12 +260,7 @@
     G.banked = run.gems;
     const prevBest = G.save.best;
     const isBest = run.score > prevBest;
-    save({
-      best: Math.max(prevBest, run.score),
-      bestGates: Math.max(G.save.bestGates, run.gates),
-      gems: G.save.gems + earned,
-      plays: G.save.plays + (G.revived ? 0 : 1),
-    });
+    commit({ type: 'run', earned, score: run.score, gates: run.gates, counted: !G.revived });
     G.mode = 'over';
     G.overAt = root.performance.now();
     G.overData = {
@@ -509,22 +590,28 @@
     const skin = CFG.SKINS.find((s) => s.id === id);
     if (!skin) return;
     if (G.save.owned.includes(id)) {
-      save({ skin: id });
+      commit({ type: 'wear', id });
       Sfx.click();
     } else if (G.save.gems >= skin.cost) {
-      // All or nothing: no gems spent and no skin granted unless the purchase is saved.
-      if (!savePaid({ gems: G.save.gems - skin.cost, owned: G.save.owned.concat(id), skin: id })) {
-        UI.toast("Couldn't save, so the purchase was cancelled.");
+      // All or nothing: checked against the latest save plus queued changes; no gems spent and
+      // no skin granted unless the purchase is saved.
+      const r = commitPaid({ type: 'buy', id, cost: skin.cost });
+      if (!r.ok) {
+        UI.toast(r.reason === 'rejected'
+          ? (skin.cost - G.save.gems) + ' more gems to unlock ' + skin.name
+          : "Couldn't save, so the purchase was cancelled.");
         UI.showShop(G.save);
         return;
       }
-      Sfx.buy();
-      UI.toast(skin.name + ' unlocked');
+      const already = r.notes.includes('already-owned'); // bought in another tab: not charged
+      if (already) Sfx.click();
+      else Sfx.buy();
+      UI.toast(skin.name + (already ? ' was already unlocked' : ' unlocked'));
     } else {
       UI.toast((skin.cost - G.save.gems) + ' more gems to unlock ' + skin.name);
       return;
     }
-    G.skin = skinOf(G.save);
+    G.skin = skinOf(G.save); // the player's own pick in the shop shows at once, as before
     UI.showShop(G.save);
   }
 
@@ -542,9 +629,7 @@
     },
     /** Shared by the title, result-card and paused sound buttons. Never changes the screen. */
     onSound() {
-      save({ muted: !G.save.muted });
-      Sfx.muted = G.save.muted;
-      UI.setSound(G.save.muted);
+      commit({ type: 'muted', value: !G.save.muted }); // the value the player chose, not a flip
     },
     onRetry: startRun,
     onShare: share,
@@ -552,7 +637,8 @@
     onRevive() {
       if (G.mode !== 'over' || G.revived) return;
       if (G.save.gems >= CFG.REVIVE_COST) {
-        save({ gems: G.save.gems - CFG.REVIVE_COST }); // revive rules are unchanged until M0.6c
+        // Deducted from the latest saved balance; the revive rules are unchanged until M0.6c.
+        commit({ type: 'spend', amount: CFG.REVIVE_COST });
         revive();
         return;
       }
@@ -566,6 +652,7 @@
     const e = UI.mount(doc.getElementById('app'), handlers);
     UI.setSound(G.save.muted);
     showSaveNote();
+    root.addEventListener('storage', onStorage);
     G.ctx = e.canvas.getContext('2d');
     for (let i = 0; i < 34; i++) {
       G.streaks.push({ x: Math.random() * C.W, y: Math.random() * 900, z: 0.2 + Math.random() * 0.8 });

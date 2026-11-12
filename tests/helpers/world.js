@@ -21,19 +21,69 @@ const domError = (name, code) => Object.assign(new Error(name), { name, code });
  * Set `fail.get`, `fail.set` or `fail.remove` to an error (or to a function of the key that
  * returns an error or null) to make that call throw. `map` is shared, so two calls with the same
  * map behave like one browser profile.
+ * `hooks.afterGet(key)` runs after every read and `hooks.beforeSet(key)` before every write: tests
+ * use them to make "another tab" write at an exact moment. `onChange(key, oldValue, newValue)`
+ * reports every change this storage makes (the cross-tab event bus listens to it).
  */
-function fakeStorage(map = new Map()) {
+function fakeStorage(map = new Map(), onChange = null) {
   const fail = { get: null, set: null, remove: null };
+  const hooks = { afterGet: null, beforeSet: null };
   const check = (kind, key) => {
     const f = typeof fail[kind] === 'function' ? fail[kind](key) : fail[kind];
     if (f) throw f;
   };
   return {
-    map, fail,
-    getItem(k) { check('get', k); return map.has(k) ? map.get(k) : null; },
-    setItem(k, v) { check('set', k); map.set(k, String(v)); },
-    removeItem(k) { check('remove', k); map.delete(k); },
+    map, fail, hooks,
+    getItem(k) {
+      check('get', k);
+      const v = map.has(k) ? map.get(k) : null;
+      if (hooks.afterGet) hooks.afterGet(k);
+      return v;
+    },
+    setItem(k, v) {
+      check('set', k);
+      if (hooks.beforeSet) hooks.beforeSet(k);
+      const old = map.has(k) ? map.get(k) : null;
+      map.set(k, String(v));
+      if (onChange) onChange(k, old, String(v));
+    },
+    removeItem(k) {
+      check('remove', k);
+      const old = map.has(k) ? map.get(k) : null;
+      map.delete(k);
+      if (onChange && old !== null) onChange(k, old, null);
+    },
   };
+}
+
+/**
+ * Several tabs of one browser profile: worlds made with `{ bus }` share `bus.map`, and every
+ * change one of them makes queues a `storage` event for all the others (never the writer), as
+ * browsers do. Events are delivered only by `bus.flush()`, because browsers deliver them later.
+ * `bus.write` / `bus.remove` change storage as an outside writer (an older build, another site
+ * tool); `bus.send` delivers a hand-made event, for example one whose newValue is wrong.
+ */
+function storageBus(map = new Map()) {
+  const tabs = [];
+  const queue = [];
+  const bus = {
+    map, queue,
+    join(deliver) { tabs.push(deliver); return tabs.length - 1; },
+    changed(from, key, oldValue, newValue) { queue.push({ from, key, oldValue, newValue }); },
+    flush() {
+      for (let guard = 0; queue.length && guard < 100; guard++) {
+        const ev = queue.shift();
+        tabs.forEach((deliver, i) => {
+          if (i !== ev.from) deliver({ key: ev.key, oldValue: ev.oldValue, newValue: ev.newValue, storageArea: null });
+        });
+      }
+      assert.equal(queue.length, 0, 'storage events kept bouncing between tabs');
+    },
+    write(key, value) { const old = map.has(key) ? map.get(key) : null; map.set(key, value); bus.changed(-1, key, old, value); },
+    remove(key) { const old = map.has(key) ? map.get(key) : null; map.delete(key); bus.changed(-1, key, old, null); },
+    send(event) { tabs.forEach((deliver) => deliver(event)); },
+  };
+  return bus;
 }
 
 /**
@@ -104,7 +154,11 @@ function makeWorld(opts = {}) {
     setTimeout: () => 0, clearTimeout() {},
     addEventListener: on(bags.win),
   };
-  if (typeof opts.localStorage !== 'function') win.localStorage = opts.localStorage || fakeStorage(storage);
+  let tabId = -1;
+  if (opts.bus) {
+    win.localStorage = fakeStorage(opts.bus.map, (k, o, n) => opts.bus.changed(tabId, k, o, n));
+    tabId = opts.bus.join((e) => fire(bags.win, 'storage', e));
+  } else if (typeof opts.localStorage !== 'function') win.localStorage = opts.localStorage || fakeStorage(storage);
   win.self = win;
   vm.createContext(win);
   if (typeof opts.localStorage === 'function') blockStorage(win, opts.localStorage);
@@ -116,6 +170,7 @@ function makeWorld(opts = {}) {
   const anywhere = { closest: () => null };
   const world = {
     G, TS, clock, storage, document,
+    ls: typeof opts.localStorage === 'function' ? null : win.localStorage, // for failure injection
     /** A click as the browser sends it: detail 1 for a pointer click, 0 for keyboard activation. */
     click(el, detail = 1) { fire(el.bag, 'click', { detail, currentTarget: el, target: el }); },
     tick(n = 1, ms = 16) {
@@ -176,4 +231,4 @@ function pausedWorld(opts) {
   return w;
 }
 
-module.exports = { ROOT, SCRIPTS, makeWorld, pausedWorld, fakeStorage, domError, blockStorage };
+module.exports = { ROOT, SCRIPTS, makeWorld, pausedWorld, fakeStorage, domError, blockStorage, storageBus };

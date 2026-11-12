@@ -18,6 +18,7 @@
       skin: owned.includes(d.skin) ? d.skin : 'classic',
       muted: d.muted === true,
       plays: num(d.plays),
+      rev: num(d.rev), // write counter; saves from before M0.6b have none and read as 0
     };
   }
 
@@ -28,7 +29,13 @@
    */
   const BACKUP_KEY = KEY + '.bak';
   const PROBE_KEY = 'twin-snap-probe'; // temporary, never the save or the backup
-  const state = { protected: false, probeLeft: false };
+  const state = {
+    protected: false,
+    probeLeft: false,
+    corruptRaw: null, // the damaged text seen at startup, if any
+    recoveredRaw: null, // that text, once backed up by this session: the first write may replace it
+  };
+  const MAX_ATTEMPTS = 3;
 
   /** Classifies a storage exception: 'quota' (full), 'unavailable' (blocked) or 'error'. */
   function reasonOf(err) {
@@ -91,14 +98,70 @@
   /** Recovers from a corrupt save: backed up and writable, or protected for the session. */
   function openCorrupt(ls, raw) {
     let ok = false;
+    state.corruptRaw = raw;
     try {
       ok = backUp(ls, raw);
     } catch (err) {
       ok = false;
     }
-    if (ok) return 'corrupt-recovered';
+    if (ok) {
+      state.recoveredRaw = raw;
+      return 'corrupt-recovered';
+    }
     state.protected = true;
     return 'corrupt-protected';
+  }
+
+  /*
+   * Changes. Every write is a list of changes applied to the latest stored save, never a copy of
+   * this tab's memory, so a tab that has not seen another tab's writes cannot undo them. Changes
+   * are plain data, so a list can be replayed onto any save with the same result.
+   *   run    {earned, score, gates, counted}  end of a run: adds gems and plays, keeps the best
+   *   wear   {id}                             wear a skin, only if the save owns it
+   *   muted  {value}                          the sound setting the player chose
+   *   spend  {amount}                         spend gems (the revive)
+   *   buy    {id, cost}                       buy a skin; refused if the save cannot afford it
+   */
+  function change(s, c) {
+    switch (c.type) {
+      case 'run':
+        return {
+          save: { ...s, best: Math.max(s.best, c.score), bestGates: Math.max(s.bestGates, c.gates),
+            gems: s.gems + c.earned, plays: s.plays + (c.counted ? 1 : 0) },
+        };
+      case 'wear':
+        return { save: s.owned.includes(c.id) ? { ...s, skin: c.id } : s };
+      case 'muted':
+        return { save: { ...s, muted: c.value === true } };
+      case 'spend':
+        return { save: { ...s, gems: Math.max(0, s.gems - c.amount) } };
+      case 'buy':
+        if (s.owned.includes(c.id)) return { save: { ...s, skin: c.id }, note: 'already-owned' };
+        if (s.gems < c.cost) return { rejected: 'insufficient' };
+        return { save: { ...s, gems: s.gems - c.cost, owned: s.owned.concat(c.id), skin: c.id } };
+      default:
+        return { save: s };
+    }
+  }
+
+  /** Applies `changes` in order to a copy of `save`. Pure: the same input gives the same output. */
+  function project(save, changes) {
+    let s = sanitize(save);
+    const notes = [];
+    for (let i = 0; i < changes.length; i++) {
+      const r = change(s, changes[i]);
+      if (r.rejected) return { save: s, rejected: r.rejected, notes };
+      if (r.note) notes.push(r.note);
+      s = sanitize(r.save);
+    }
+    return { save: s, notes };
+  }
+
+  /** The stored save as a starting point for changes, or a reason it cannot be used. */
+  function baseOf(raw) {
+    if (raw === null || raw === state.recoveredRaw) return { save: sanitize(DEFAULTS), deleted: raw === null };
+    const data = parse(raw);
+    return data === undefined ? { reason: 'corrupt' } : { save: sanitize(data) };
   }
 
   TS.Store = {
@@ -134,23 +197,85 @@
       return out;
     },
 
+    project,
+
     /**
-     * Saves `save` with `patch` applied. Never mutates `save`.
-     * @returns {{ok: boolean, save: object, reason?: 'quota'|'unavailable'|'protected'|'error', probe?: 'left'}}
-     *   ok is true only if the new save was written. On failure `save` is the unsaved result, for
-     *   callers that keep progress in memory; callers making a purchase must discard it.
+     * Re-reads and checks the stored save (used when another tab has written).
+     * @returns {{ok: boolean, save?: object, deleted?: boolean, reason?: 'corrupt'|'unavailable'|'quota'|'error',
+     *   unprotected?: true}} unprotected: a corrupt-protected session may write again, because a
+     *   valid save replaced the damaged one and the backup is exactly the damaged text it saw.
      */
-    write(save, patch) {
-      const next = sanitize({ ...save, ...patch });
-      if (state.protected) return { ok: false, save: next, reason: 'protected' };
+    read() {
+      let ls;
+      let raw;
       try {
-        const ls = storage();
-        if (state.probeLeft) removeProbe(ls);
-        ls.setItem(KEY, JSON.stringify(next));
+        ls = storage();
+        raw = readRaw();
       } catch (err) {
-        return { ok: false, save: next, reason: reasonOf(err) };
+        return { ok: false, reason: reasonOf(err) };
       }
-      return state.probeLeft ? { ok: true, save: next, probe: 'left' } : { ok: true, save: next };
+      const base = baseOf(raw);
+      if (base.reason) return { ok: false, reason: base.reason };
+      const out = { ok: true, save: base.save };
+      if (base.deleted) out.deleted = true;
+      if (state.protected && raw !== null && state.corruptRaw !== null) {
+        try {
+          if (ls.getItem(BACKUP_KEY) === state.corruptRaw) {
+            state.protected = false;
+            out.unprotected = true;
+          }
+        } catch (err) {
+          /* cannot confirm the backup: stay protected */
+        }
+      }
+      return out;
+    },
+
+    /**
+     * The only way the game writes its save: applies `changes` to the latest stored save and
+     * writes the result with rev + 1. Before writing it re-reads the save; if another tab wrote in
+     * between, it starts again (MAX_ATTEMPTS in all). localStorage has no compare-and-swap, so a
+     * write by another tab after that last re-read is still overwritten: this narrows the race, it
+     * cannot close it.
+     * @param {object[]} changes see change()
+     * @returns {{ok: boolean, save?: object, latest?: object, reason?: string, notes?: string[], attempts?: number,
+     *   probe?: 'left'}} ok is true only if the new save was written; `save` is set only then.
+     *   save: what was written. latest: the stored save it started from (for refreshing).
+     *   reason: 'rejected' (a purchase it cannot afford; nothing written), 'conflict' (the stored
+     *   save is damaged and not ours to replace), 'busy' (it kept changing), 'protected', 'quota',
+     *   'unavailable' or 'error'.
+     */
+    apply(changes) {
+      if (state.protected) return { ok: false, reason: 'protected' };
+      let attempts = 0;
+      while (attempts < MAX_ATTEMPTS) {
+        attempts++;
+        let ls;
+        let raw;
+        try {
+          ls = storage();
+          raw = readRaw();
+        } catch (err) {
+          return { ok: false, reason: reasonOf(err), attempts };
+        }
+        const base = baseOf(raw);
+        if (base.reason) return { ok: false, reason: 'conflict', attempts };
+        const p = project(base.save, changes);
+        if (p.rejected) return { ok: false, reason: 'rejected', latest: base.save, attempts };
+        const next = sanitize({ ...p.save, rev: base.save.rev + 1 });
+        try {
+          if (readRaw() !== raw) continue; // another tab wrote meanwhile: start again
+          if (state.probeLeft) removeProbe(ls);
+          ls.setItem(KEY, JSON.stringify(next));
+        } catch (err) {
+          return { ok: false, reason: reasonOf(err), attempts };
+        }
+        if (raw === state.recoveredRaw) state.recoveredRaw = null;
+        const out = { ok: true, save: next, latest: base.save, notes: p.notes, attempts };
+        if (state.probeLeft) out.probe = 'left'; // still reported while its removal keeps failing
+        return out;
+      }
+      return { ok: false, reason: 'busy', attempts };
     },
   };
 

@@ -81,13 +81,10 @@ test('when storage works again, the next save stores the accumulated progress an
 });
 
 test('a skin purchase that cannot be saved changes nothing and says so', () => {
-  // Arrange: 100 gems saved
-  const ls = fakeStorage();
+  // Arrange: 100 gems saved (purchases are checked against the stored save, so it must be stored)
+  const ls = fakeStorage(new Map([[KEY, JSON.stringify({ gems: 100 })]]));
   const w = makeWorld({ localStorage: ls });
   const { toasts } = watch(w);
-  w.TS.UI.handlers.onSound();
-  w.TS.UI.handlers.onSound();
-  w.G.save = { ...w.G.save, gems: 100 };
   const before = w.G.save;
   const snapshot = JSON.stringify(before);
   const raw = ls.map.get(KEY);
@@ -106,9 +103,8 @@ test('a skin purchase that cannot be saved changes nothing and says so', () => {
 });
 
 test('a skin purchase that saves deducts gems and grants the skin', () => {
-  const ls = fakeStorage();
+  const ls = fakeStorage(new Map([[KEY, JSON.stringify({ gems: 100 })]]));
   const w = makeWorld({ localStorage: ls });
-  w.G.save = { ...w.G.save, gems: 100 };
   w.TS.UI.handlers.onSkin('gum');
   assert.equal(w.G.save.gems, 70);
   assert.equal(w.G.skin.id, 'gum');

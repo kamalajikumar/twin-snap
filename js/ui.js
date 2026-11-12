@@ -171,14 +171,33 @@
 
     showMenu(save) {
       this.hideAll();
-      this.el.best.textContent = 'Best ' + save.best;
-      this.el.gems.textContent = '◆ ' + save.gems;
+      this.fillMenu(save);
       this.setSound(save.muted);
       this.el.menu.hidden = false;
     },
 
+    fillMenu(save) {
+      this.el.best.textContent = 'Best ' + save.best;
+      this.el.gems.textContent = '◆ ' + save.gems;
+    },
+
     showOver(d) {
       this.hideAll();
+      this.fillOver(d);
+      this.el.over.hidden = false;
+    },
+
+    /**
+     * Updates every screen that shows saved values, without opening or closing any screen
+     * (used when another tab saved). `overData` is the result card's data, if there is one.
+     */
+    refreshSave(save, overData) {
+      this.fillMenu(save);
+      if (overData) this.fillOver(overData);
+      if (!this.el.shop.hidden) this.showShop(save);
+    },
+
+    fillOver(d) {
       const e = this.el;
       e.overLabel.textContent = d.isBest ? 'New best!' : 'Score';
       e.overLabel.classList.toggle('is-best', d.isBest);
@@ -187,7 +206,6 @@
       e.overGems.textContent = '+' + d.earned + ' ◆   (you have ' + d.gems + ')';
       e.revive.hidden = !d.canRevive;
       e.revive.textContent = d.gems >= CFG.REVIVE_COST ? 'Keep going · ◆ ' + CFG.REVIVE_COST : 'Keep going · watch ad';
-      e.over.hidden = false;
     },
 
     showShop(save) {
