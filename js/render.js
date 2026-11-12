@@ -8,6 +8,9 @@
   const INK = CFG.INK;
   const TAU = Math.PI * 2;
   const TRAIL_LIFE = 0.34;
+  // Paused screen, as offsets from the twin line: PAUSED (and the 3-2-1 digits), the sound toggle
+  // (a DOM button that game.js places), and TAP TO RESUME. title matches 0.42 * H at H=640.
+  const PAUSE = Object.freeze({ title: -205, toggle: -98, pill: 64 });
 
   const rgb = (c) => 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')';
 
@@ -305,10 +308,25 @@
     ctx.fillStyle = '#fff';
     ctx.fillText(String(G.save.gems + run.gems - G.banked), C.W - 48, 33);
 
-    if (G.mode === 'ready') pill(ctx, 'HOLD TO CONTINUE', C.HALF, run.TY + 64, 16, INK, '#FFD23F');
-    else if (G.mode === 'play' && G.hint) {
+    if (G.mode === 'ready') {
+      bigText(ctx, 'PAUSED', run.TY + PAUSE.title, 44);
+      pill(ctx, 'TAP TO RESUME', C.HALF, run.TY + PAUSE.pill, 16, INK, '#FFD23F');
+    } else if (G.mode === 'count' && G.countDigit > 0) {
+      bigText(ctx, String(G.countDigit), run.TY + PAUSE.title, 96);
+    } else if (G.mode === 'play' && G.hint) {
       pill(ctx, G.hint, C.HALF, run.TY + 64, 20, INK, G.hint === 'HOLD' ? '#FFD23F' : '#3BF4C7');
     }
+  }
+
+  /** Large centred display text with the same drop shadow as the score. */
+  function bigText(ctx, text, y, size) {
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = size + 'px ' + CFG.FONT_DISPLAY;
+    ctx.fillStyle = 'rgba(21,11,61,0.55)';
+    ctx.fillText(text, C.HALF + 3, y + 5);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(text, C.HALF, y);
   }
 
   function drawVignette(ctx, G) {
@@ -332,8 +350,8 @@
     TS.Fx.draw(ctx, CFG.FONT_DISPLAY);
     ctx.restore();
     drawVignette(ctx, G);
-    if (G.mode === 'menu') {
-      ctx.fillStyle = 'rgba(21,11,61,0.38)';
+    if (G.mode === 'menu' || G.mode === 'ready' || G.mode === 'count') {
+      ctx.fillStyle = 'rgba(21,11,61,0.38)'; // dim the playfield behind menus, pause and countdown
       ctx.fillRect(0, 0, C.W, G.H);
     }
     drawHud(ctx, G);
@@ -343,5 +361,5 @@
     }
   }
 
-  TS.Render = { draw, TRAIL_LIFE };
+  TS.Render = { draw, TRAIL_LIFE, PAUSE };
 })(self);
