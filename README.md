@@ -19,7 +19,7 @@ No build step and no dependencies: open `index.html` in a browser.
 | `js/core.js` | Pure game simulation: physics, level generator, scoring, Fever. No DOM. |
 | `js/input.js` | Pure input state: which fingers and keys are down. No DOM. |
 | `js/config.js` | Themes, skins, prices. |
-| `js/services.js` | Save data, synthesised sound, haptics, ad adapter (placeholder). |
+| `js/services.js` | Save data, synthesised sound, haptics, ad adapter (no ad provider; offers no rewards). |
 | `js/sprites.js`, `js/render.js`, `js/fx.js` | Canvas drawing and effects. |
 | `js/ui.js` | Menus. |
 | `js/game.js` | Game loop, input, glue. |
@@ -29,6 +29,7 @@ No build step and no dependencies: open `index.html` in a browser.
 | `tests/store.test.js` | Save storage: load and write status, corrupt-save backup, failure injection. |
 | `tests/game.save.test.js` | What the player sees and keeps when saving fails. |
 | `tests/game.tabs.test.js` | Several open tabs sharing one save. |
+| `tests/game.revive.test.js` | The gem-paid revive: price, stale balances, save failures, no ad-funded revive. |
 | `tests/helpers/world.js` | The shared stand-in browser, fake storage and multi-tab event bus used by the tests. |
 | `tools/humansim.js` | Simulated imperfect players, used to tune difficulty. |
 | `tools/bundle.js` | Packs everything into one HTML file. |
@@ -36,7 +37,7 @@ No build step and no dependencies: open `index.html` in a browser.
 ## Commands
 
 ```bash
-node --test tests/core.test.js tests/input.test.js tests/game.input.test.js tests/store.test.js tests/game.save.test.js tests/game.tabs.test.js
+node --test tests/core.test.js tests/input.test.js tests/game.input.test.js tests/store.test.js tests/game.save.test.js tests/game.tabs.test.js tests/game.revive.test.js
 node tools/humansim.js ../js/core.js
 node tools/bundle.js
 ```
@@ -57,6 +58,8 @@ What this guarantees:
 - A tab that has not seen another tab's changes cannot undo them by writing an old copy.
 - The best score and owned skins never go down; a skin is never charged twice.
 - A purchase is saved completely or not at all.
+- A revive costs 20 gems, checked against the latest saved balance. It is granted only after the
+  payment is saved; if the payment is refused or cannot be saved, nothing is charged or granted.
 - Damaged save data is never overwritten; a tab that finds it says so and keeps playing.
 
 What it cannot guarantee: `localStorage` has no atomic compare-and-swap.
@@ -66,10 +69,13 @@ What it cannot guarantee: `localStorage` has no atomic compare-and-swap.
   lost.
 - **Race after the final check.** If another tab writes after that last re-read and before this
   tab's write lands, this tab's write replaces it and that other change is lost. It needs two
-  writes within moments of each other, and cannot be prevented without a browser lock.
+  writes within moments of each other, and cannot be prevented without a browser lock. This also
+  applies to purchases and revive payments: one of the two writes can be lost.
 
-A tab running an older build still writes its whole copy and can overwrite newer progress.
+A tab running an older build still writes its whole copy and can overwrite newer progress, and
+still offers its old placeholder ad revive.
 
 ## Status
 
-Playable web prototype. Ads are a placeholder and there is no app-store build yet.
+Playable web prototype. There are no ads: no ad provider is integrated, so no ad rewards are
+offered. There is no app-store build yet.

@@ -119,7 +119,7 @@
    *   run    {earned, score, gates, counted}  end of a run: adds gems and plays, keeps the best
    *   wear   {id}                             wear a skin, only if the save owns it
    *   muted  {value}                          the sound setting the player chose
-   *   spend  {amount}                         spend gems (the revive)
+   *   spend  {amount}                         pay for a revive; refused if the save cannot afford it
    *   buy    {id, cost}                       buy a skin; refused if the save cannot afford it
    */
   function change(s, c) {
@@ -134,7 +134,8 @@
       case 'muted':
         return { save: { ...s, muted: c.value === true } };
       case 'spend':
-        return { save: { ...s, gems: Math.max(0, s.gems - c.amount) } };
+        if (s.gems < c.amount) return { rejected: 'insufficient' };
+        return { save: { ...s, gems: s.gems - c.amount } };
       case 'buy':
         if (s.owned.includes(c.id)) return { save: { ...s, skin: c.id }, note: 'already-owned' };
         if (s.gems < c.cost) return { rejected: 'insufficient' };
@@ -378,15 +379,14 @@
   TS.Sfx = Sfx;
 
   /*
-   * Ad adapter. This web build has no ad network: `rewarded` shows a short placeholder so the
-   * revive flow can be felt end to end. To ship, replace the two bodies with real SDK calls
-   * (for example AdMob through Capacitor) and keep the same promise contract.
+   * Ad adapter. This web build has no ad provider, so no reward is ever offered or granted. A
+   * real provider (for example AdMob through Capacitor) would replace these bodies, and a reward
+   * would be granted only on its verified completion.
    */
   TS.Ads = {
-    placeholder: null, // set by the UI layer
-    /** @returns {Promise<boolean>} true when the player earned the reward */
+    /** @returns {Promise<boolean>} always false: rewarded ads are unavailable in this build */
     rewarded() {
-      return this.placeholder ? this.placeholder() : Promise.resolve(true);
+      return Promise.resolve(false);
     },
     /** Call between runs; a real build would show an interstitial every few deaths. */
     interstitial() {

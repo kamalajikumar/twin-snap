@@ -482,3 +482,44 @@ test('apply reports storage failures without writing', () => {
   assert.equal(a.store.apply([run(1)]).reason, 'unavailable');
   assert.equal(a.ls.map.get(KEY), before);
 });
+
+// ---------- the revive payment (M0.6c) ----------
+
+const spend = (amount) => ({ type: 'spend', amount });
+
+test('a revive payment from exactly its price succeeds and leaves nothing', () => {
+  const [a] = tabs({ gems: 20 }, 1);
+  const r = a.store.apply([spend(20)]);
+  assert.equal(r.ok, true);
+  assert.equal(stored(a).gems, 0);
+  assert.equal(stored(a).rev, 1);
+});
+
+test('a revive payment the latest save cannot afford is refused and writes nothing', () => {
+  const [a] = tabs({ gems: 19 }, 1);
+  const before = a.ls.map.get(KEY);
+  const r = a.store.apply([spend(20)]);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'rejected');
+  assert.equal(r.latest.gems, 19, 'reports the balance it was checked against');
+  assert.equal(r.save, undefined);
+  assert.equal(a.ls.map.get(KEY), before, 'nothing written, not even a lower balance');
+});
+
+test('project() refuses an unaffordable payment instead of charging what is left', () => {
+  const { store } = tabs(null, 1)[0];
+  const p = store.project({ gems: 5 }, [spend(20)]);
+  assert.equal(p.rejected, 'insufficient');
+  assert.equal(p.save.gems, 5);
+});
+
+test('queued gems count towards a payment saved in the same write', () => {
+  const [a] = tabs({ gems: 15 }, 1);
+  const r = a.store.apply([run(5), spend(20)]);
+  assert.equal(r.ok, true);
+  assert.equal(stored(a).gems, 0);
+  assert.equal(stored(a).plays, 1);
+  assert.equal(stored(a).rev, 1, 'one write');
+  assert.equal(a.store.apply([run(4), spend(20)]).reason, 'rejected', 'and not when they fall short');
+  assert.equal(stored(a).plays, 1, 'a refused write keeps none of its changes');
+});

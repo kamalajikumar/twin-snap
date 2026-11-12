@@ -272,6 +272,26 @@
     Ads.interstitial();
   }
 
+  /**
+   * Pays for a revive and grants it, all or nothing. Whether it is affordable is decided by the
+   * payment itself, against the latest stored save plus queued changes, never by this tab's
+   * memory. The revive is granted only after the payment is saved; a refused or failed payment
+   * charges nothing, grants nothing and is never queued.
+   */
+  function buyRevive() {
+    if (G.mode !== 'over' || G.revived) return; // once per run
+    const r = commitPaid({ type: 'spend', amount: CFG.REVIVE_COST });
+    if (r.ok) {
+      revive();
+      return;
+    }
+    G.overData = { ...G.overData, gems: G.save.gems }; // a refusal brought in the latest balance
+    UI.fillOver(G.overData);
+    UI.toast(r.reason === 'rejected'
+      ? (CFG.REVIVE_COST - G.save.gems) + ' more gems to keep going'
+      : "Couldn't save, so the revive was cancelled.");
+  }
+
   function revive() {
     G.revived = true;
     Core.reviveRun(G.run);
@@ -634,18 +654,7 @@
     onRetry: startRun,
     onShare: share,
     onSkin: pickSkin,
-    onRevive() {
-      if (G.mode !== 'over' || G.revived) return;
-      if (G.save.gems >= CFG.REVIVE_COST) {
-        // Deducted from the latest saved balance; the revive rules are unchanged until M0.6c.
-        commit({ type: 'spend', amount: CFG.REVIVE_COST });
-        revive();
-        return;
-      }
-      Ads.rewarded().then((earned) => {
-        if (earned && G.mode === 'over' && !G.revived) revive();
-      });
-    },
+    onRevive: buyRevive,
   };
 
   function boot() {

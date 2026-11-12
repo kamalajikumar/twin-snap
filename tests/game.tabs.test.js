@@ -306,7 +306,7 @@ test('a skin changed in another tab shows from the next run, not in the middle o
   assert.equal(c.G.skin.id, 'classic');
 });
 
-test('the revive deduction uses the latest balance (revive rules otherwise unchanged)', () => {
+test('a revive is paid from the latest balance, including a purchase made in another tab', () => {
   const bus = profile({ gems: 100 });
   const a = tab(bus);
   const b = tab(bus);
@@ -314,6 +314,6 @@ test('the revive deduction uses the latest balance (revive rules otherwise uncha
   const earned = b.G.run.gems;
   a.TS.UI.handlers.onSkin('blox'); // 60, from a tab that has not seen B's run
   b.TS.UI.handlers.onRevive();
-  assert.equal(b.G.mode, 'ready', 'revive granted as before');
+  assert.equal(b.G.mode, 'ready', 'still affordable: revived');
   assert.equal(stored(bus).gems, 100 + earned - 60 - 20);
 });

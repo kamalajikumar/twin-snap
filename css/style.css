@@ -117,6 +117,7 @@ body {
   transition: transform var(--press), box-shadow var(--press);
 }
 .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+.btn:disabled { opacity: 0.55; cursor: default; transform: none; box-shadow: 0 5px 0 var(--ink); }
 .btn:focus-visible, .skin:focus-visible { outline: 3px solid var(--white); outline-offset: 3px; }
 .btn-sun { background: var(--sun); font-size: 20px; padding-block: 14px; }
 .btn-mint { background: var(--mint); }
@@ -190,22 +191,6 @@ body {
   font-weight: 500;
   text-align: center;
 }
-.adph {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  background: var(--night);
-  text-align: center;
-  pointer-events: auto;
-}
-.adph p { margin: 0; }
-.adph-title { font-family: var(--font-display); font-size: 30px; color: var(--sun); }
-.adph-note { max-width: 26ch; opacity: 0.8; }
 
 @media (prefers-reduced-motion: reduce) {
   .start, .card { animation: none; }

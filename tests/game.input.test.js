@@ -7,6 +7,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { SCRIPTS, makeWorld, pausedWorld } = require('./helpers/world.js');
 
+/** Storage holding a save with `gems` gems. */
+const withGems = (gems) => new Map([['twin-snap-save-v1', JSON.stringify({ gems })]]);
+
 test('the page loads the input module before the game', () => {
   assert.ok(SCRIPTS.includes('js/input.js'), 'index.html must load js/input.js');
   assert.ok(SCRIPTS.indexOf('js/input.js') < SCRIPTS.indexOf('js/game.js'));
@@ -233,12 +236,11 @@ test('the result card ignores taps at first, then a tap restarts holding', () =>
 });
 
 test('revive pauses, then uses the same tap and countdown to resume', () => {
-  // Arrange
-  const w = makeWorld();
+  // Arrange: 50 gems stored (the revive is paid from the stored save)
+  const w = makeWorld({ storage: withGems(50) });
   w.down(1);
   w.up(1);
   w.dieNow();
-  w.G.save = { ...w.G.save, gems: 50 };
   // Act
   w.TS.UI.handlers.onRevive();
   w.tick(5);
@@ -670,10 +672,9 @@ test('interruptions during the countdown and revive both bring the paused toggle
   assert.equal(w.G.mode, 'ready');
   assert.equal(pauseShown(w), true);
   // Revive
-  const r = makeWorld();
+  const r = makeWorld({ storage: withGems(50) });
   r.startAndRelease();
   r.dieNow();
-  r.G.save = { ...r.G.save, gems: 50 };
   r.TS.UI.handlers.onRevive();
   assert.equal(r.G.mode, 'ready');
   assert.equal(pauseShown(r), true);

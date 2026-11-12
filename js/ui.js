@@ -113,28 +113,14 @@
       e.pause = h('section', { class: 'screen', id: 'pause', hidden: true, 'aria-label': 'Paused' }, [e.pauseSound]);
 
       e.toast = h('div', { class: 'toast', id: 'toast', role: 'status', hidden: true });
-      e.ad = h('div', { class: 'adph', id: 'adph', hidden: true }, [
-        h('p', { class: 'adph-title', text: 'Ad break' }),
-        h('p', { class: 'adph-note', text: 'Placeholder. A real rewarded ad plays here in the store build.' }),
-      ]);
-
-      e.ui = h('div', { class: 'ui' }, [e.menu, e.over, e.shop, e.pause, e.toast, e.ad]);
+      e.ui = h('div', { class: 'ui' }, [e.menu, e.over, e.shop, e.pause, e.toast]);
       e.stage = h('div', { class: 'stage', id: 'stage' }, [e.canvas, e.ui]);
       app.appendChild(e.stage);
-
-      TS.Ads.placeholder = () =>
-        new Promise((resolve) => {
-          e.ad.hidden = false;
-          root.setTimeout(() => {
-            e.ad.hidden = true;
-            resolve(true);
-          }, 1400);
-        });
       return e;
     },
 
     modalOpen() {
-      return !this.el.shop.hidden || !this.el.ad.hidden;
+      return !this.el.shop.hidden;
     },
 
     /** Hides a screen, first moving keyboard focus off it so Space cannot reach a hidden button. */
@@ -204,8 +190,11 @@
       e.overScore.textContent = String(d.score);
       e.overBest.textContent = d.isBest ? 'You beat ' + d.prevBest : 'Best ' + d.best + ' · ' + d.toBeat + ' to beat it';
       e.overGems.textContent = '+' + d.earned + ' ◆   (you have ' + d.gems + ')';
+      // Shows the latest known balance; the payment itself is checked against the stored save.
+      const short = CFG.REVIVE_COST - d.gems;
       e.revive.hidden = !d.canRevive;
-      e.revive.textContent = d.gems >= CFG.REVIVE_COST ? 'Keep going · ◆ ' + CFG.REVIVE_COST : 'Keep going · watch ad';
+      e.revive.disabled = short > 0;
+      e.revive.textContent = short > 0 ? 'Keep going · need ' + short + ' more ◆' : 'Keep going · ◆ ' + CFG.REVIVE_COST;
     },
 
     showShop(save) {
