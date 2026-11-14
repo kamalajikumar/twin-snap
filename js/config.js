@@ -27,6 +27,8 @@
     REVIVE_COST: 20,
     OVER_LOCK_MS: 450, // ignore taps right after the result card appears
     DEATH_MS: 800,
+    COUNTDOWN_STEPS: 3, // resuming shows 3, 2, 1
+    COUNTDOWN_STEP_MS: 500, // how long each number stays up
     INK: '#150B3D',
     FONT_DISPLAY: 'Bungee, "Arial Black", Impact, sans-serif',
     FONT_BODY: 'Fredoka, "Trebuchet MS", system-ui, sans-serif',

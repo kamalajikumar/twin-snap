@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   const TS = root.TS;
-  const { Core, CFG, Store, Sfx, Fx, Render, UI, Ads } = TS;
+  const { Core, CFG, Input, Store, Sfx, Fx, Render, UI, Ads } = TS;
   const { C } = Core;
   const doc = root.document;
 
@@ -13,11 +13,14 @@
   const cloneTheme = (t) => ({ top: t.top.slice(), bot: t.bot.slice(), block: t.block.slice(), rim: t.rim.slice() });
   const skinOf = (save) => CFG.SKINS.find((s) => s.id === save.skin) || CFG.SKINS[0];
   const newSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+  const PHONE_ASPECT = 0.5625; // 9:16, width / height of the playfield column on wide screens
+  const opened = Store.open();
 
   const G = {
-    mode: 'menu', // menu (demo plays) | play | ready (paused) | dying | over
+    mode: 'menu', // menu (demo plays) | play | ready (paused) | count (3-2-1 to resume) | dying | over
+    countMs: 0, countDigit: 0, // time spent in the resume countdown, and the number on screen
     ctx: null, dpr: 1, scale: 1, H: 640,
-    run: null, held: false, save: Store.load(), skin: null,
+    run: null, held: false, save: opened.save, skin: null,
     theme: cloneTheme(THEMES[0]), themeIdx: 0, lvl: 0,
     streaks: [], trail: [], flow: 0, scroll: 0, time: 0, last: 0, acc: 0,
     shake: 0, flash: 0, squash: 0, scorePop: 0, gemPop: 0, hitstop: 0, hint: '',
@@ -28,12 +31,158 @@
   G.skin = skinOf(G.save);
   Sfx.muted = G.save.muted;
 
+  // ---------- saving ----------
+  const SAVE_NOTES = {
+    unavailable: "Progress can't be saved in this browser mode.",
+    failed: "Progress isn't being saved: storage is full or blocked.",
+    recovered: 'Your save was damaged. A copy was kept and progress was reset.',
+    protected: "Your save is damaged and couldn't be backed up, so nothing will be saved this session.",
+    damaged: 'Your save data is damaged. This tab cannot safely update your progress.',
+  };
+  const problemOf = (reason) => (reason === 'unavailable' ? SAVE_NOTES.unavailable : SAVE_NOTES.failed);
+  const saveState = {
+    // Session-long: the save was damaged and nothing will be written.
+    protected: opened.status === 'corrupt-protected',
+    // Session-long and informational: the save was damaged, backed up and reset.
+    recovered: opened.status === 'corrupt-recovered',
+    // Saving is not working right now (blocked storage, or the startup write test failed, also
+    // on top of a recovery); cleared by the next successful save.
+    problem: opened.status === 'unavailable' ? problemOf('unavailable') : opened.reason ? problemOf(opened.reason) : null,
+    // The stored save became damaged after startup (found through another tab or a refused
+    // write): this tab will not overwrite it. Cleared once a valid save is read or written.
+    damaged: false,
+  };
+  // One toast per session for a save failure the player has not already been told about.
+  saveState.warned = saveState.problem !== null;
+
+  /** The one save notice to show, in priority order. A current failure keeps the recovery visible. */
+  function saveNotice() {
+    if (saveState.protected) return SAVE_NOTES.protected;
+    if (saveState.damaged) return SAVE_NOTES.damaged;
+    if (saveState.problem && saveState.recovered) return saveState.problem + ' ' + SAVE_NOTES.recovered;
+    if (saveState.problem) return saveState.problem;
+    if (saveState.recovered) return SAVE_NOTES.recovered;
+    return null;
+  }
+
+  function showSaveNote() {
+    UI.setSaveNote(saveNotice());
+  }
+
+  // Not storage failures: protected is already explained, rejected wrote nothing on purpose, and
+  // busy means another tab kept writing (the change is kept and saved with the next write).
+  const QUIET_FAILURES = ['protected', 'rejected', 'busy'];
+
+  /** The stored save is damaged (or valid again); tells the player once when it becomes damaged. */
+  function setDamaged(damaged) {
+    if (damaged && !saveState.damaged) UI.toast(SAVE_NOTES.damaged);
+    saveState.damaged = damaged;
+  }
+
+  function afterWrite(r) {
+    if (r.ok) {
+      saveState.problem = null;
+      setDamaged(false);
+    } else if (r.reason === 'conflict') setDamaged(true); // damaged data, not a storage failure
+    else if (!QUIET_FAILURES.includes(r.reason)) {
+      saveState.problem = problemOf(r.reason);
+      if (!saveState.warned) UI.toast(saveState.problem);
+      saveState.warned = true;
+    }
+    showSaveNote();
+  }
+
+  /*
+   * Ordinary changes (progress and settings) that could not be saved yet. They are plain data
+   * (see Store's change()), applied to G.save once, and replayed onto the latest stored save by
+   * the next write. They are removed only after a successful write. Purchases never go here.
+   */
+  let pending = [];
+
+  /**
+   * Takes on what is saved now: the sound setting and the chosen skin may have changed elsewhere.
+   * G.skin is what the twins are drawn with. A run keeps the skin it started with (through pause,
+   * death and revive); a skin chosen elsewhere is shown on the title screen at once and otherwise
+   * from the next run (startRun). Cosmetic only.
+   */
+  function adoptSave(save) {
+    G.save = save;
+    if (G.mode === 'menu') G.skin = skinOf(G.save);
+    Sfx.muted = G.save.muted;
+    UI.setSound(G.save.muted);
+  }
+
+  /** Saves an ordinary change, keeping it in memory and in the queue if it cannot be saved. */
+  function commit(change) {
+    const c = Object.freeze({ ...change });
+    const changes = pending.concat([c]);
+    const r = Store.apply(changes);
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    } else {
+      pending = changes; // each change exactly once, in order
+      adoptSave(Store.project(G.save, [c]).save);
+    }
+    afterWrite(r);
+    return r;
+  }
+
+  /** Tries to save the queued changes on their own (another tab just saved, so storage may work). */
+  function flushPending() {
+    const r = Store.apply(pending);
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    }
+    afterWrite(r);
+  }
+
+  /**
+   * Another tab changed storage. event.newValue is not trusted: the save is re-read and checked.
+   * A valid save (or a deleted one, which reads as defaults, as a reload would) replaces ours,
+   * with our unsaved changes replayed on top. Damaged data is reported and otherwise ignored: we
+   * keep what we have, and our writes refuse to replace it. Unreadable storage changes nothing.
+   */
+  function onStorage(e) {
+    if (e.key !== null && e.key !== Store.KEYS.save) return;
+    const r = Store.read();
+    if (r.unprotected) saveState.protected = false;
+    if (r.reason === 'corrupt') setDamaged(true);
+    if (r.ok) {
+      setDamaged(false);
+      adoptSave(Store.project(r.save, pending).save);
+      if (pending.length) flushPending(); // once; with an empty queue nothing is written back
+      if (G.overData) G.overData = { ...G.overData, gems: G.save.gems };
+      UI.refreshSave(G.save, G.overData);
+    }
+    showSaveNote();
+  }
+
+  /**
+   * Saves a purchase on top of the queued changes. G.save changes only if the write succeeds;
+   * if it is refused or fails, nothing is charged or granted and the queue is kept as it was.
+   */
+  function commitPaid(change) {
+    const r = Store.apply(pending.concat([Object.freeze({ ...change })]));
+    if (r.ok) {
+      pending = [];
+      adoptSave(r.save);
+    } else if (r.reason === 'rejected') {
+      adoptSave(Store.project(r.latest, pending).save); // show the balance it was checked against
+    }
+    afterWrite(r);
+    return r;
+  }
+
   function resize() {
     const app = doc.getElementById('app');
     const vw = app.clientWidth;
     const vh = app.clientHeight;
     if (!vw || !vh) return;
-    const cw = vw / vh > 0.68 ? Math.round(vh * 0.5625) : vw; // wide screens get a phone-shaped column
+    // Anything wider than 9:16 gets a 9:16 column with side bars, so the playfield is never
+    // shorter than 640 units. Not rounded: a rounded column would make it a fraction short.
+    const cw = vw / vh > PHONE_ASPECT ? vh * PHONE_ASPECT : vw;
     const e = UI.el;
     e.stage.style.width = cw + 'px';
     e.stage.style.height = vh + 'px';
@@ -43,9 +192,20 @@
     e.canvas.width = Math.round(cw * G.dpr);
     e.canvas.height = Math.round(vh * G.dpr);
     if (G.run) {
-      G.run.H = G.H;
-      G.run.TY = Math.round(G.H * 0.74);
+      const dy = Core.resizeRun(G.run, G.H);
+      for (let i = 0; i < G.trail.length; i++) G.trail[i].y += dy;
+      placePause();
     }
+  }
+
+  /** The paused sound toggle sits a fixed distance above the twins, in CSS pixels. */
+  function placePause() {
+    UI.placePause((G.run.TY + Render.PAUSE.toggle) * G.scale);
+  }
+
+  function showPause() {
+    placePause();
+    UI.showPause();
   }
 
   function resetRunState() {
@@ -70,6 +230,8 @@
   }
 
   function startRun() {
+    dropInput(); // a new run never inherits a hold; the press that starts it is added afterwards
+    G.skin = skinOf(G.save); // a run starts with the skin chosen now, and keeps it
     resetRunState();
     G.run = Core.createRun(newSeed(), G.H);
     G.mode = 'play';
@@ -81,7 +243,7 @@
     const run = G.run;
     G.mode = 'dying';
     G.deadT = 0;
-    G.held = false;
+    dropInput();
     const vw = Math.max(run.twin.w, 12);
     Fx.burst(C.HALF - vw, run.TY, G.skin.a, 34, 380, 520);
     Fx.burst(C.HALF + vw, run.TY, G.skin.b, 34, 380, 520);
@@ -98,12 +260,7 @@
     G.banked = run.gems;
     const prevBest = G.save.best;
     const isBest = run.score > prevBest;
-    G.save = Store.update(G.save, {
-      best: Math.max(prevBest, run.score),
-      bestGates: Math.max(G.save.bestGates, run.gates),
-      gems: G.save.gems + earned,
-      plays: G.save.plays + (G.revived ? 0 : 1),
-    });
+    commit({ type: 'run', earned, score: run.score, gates: run.gates, counted: !G.revived });
     G.mode = 'over';
     G.overAt = root.performance.now();
     G.overData = {
@@ -115,12 +272,33 @@
     Ads.interstitial();
   }
 
+  /**
+   * Pays for a revive and grants it, all or nothing. Whether it is affordable is decided by the
+   * payment itself, against the latest stored save plus queued changes, never by this tab's
+   * memory. The revive is granted only after the payment is saved; a refused or failed payment
+   * charges nothing, grants nothing and is never queued.
+   */
+  function buyRevive() {
+    if (G.mode !== 'over' || G.revived) return; // once per run
+    const r = commitPaid({ type: 'spend', amount: CFG.REVIVE_COST });
+    if (r.ok) {
+      revive();
+      return;
+    }
+    G.overData = { ...G.overData, gems: G.save.gems }; // a refusal brought in the latest balance
+    UI.fillOver(G.overData);
+    UI.toast(r.reason === 'rejected'
+      ? (CFG.REVIVE_COST - G.save.gems) + ' more gems to keep going'
+      : "Couldn't save, so the revive was cancelled.");
+  }
+
   function revive() {
     G.revived = true;
     Core.reviveRun(G.run);
     G.mode = 'ready';
-    G.held = false;
+    dropInput();
     UI.hideAll();
+    showPause();
   }
 
   function onPass(e, loud) {
@@ -305,53 +483,109 @@
     }
     ambient(sdt, dt);
     Fx.update(sdt);
+    if (G.mode === 'count') tickCountdown(dt); // after stepping, so the sim starts on the next frame
     G.heldLook = G.mode === 'play' ? G.held : !!G.eyes;
     Render.draw(G);
     root.requestAnimationFrame(frame);
   }
 
   // ---------- input ----------
-  function press() {
-    Sfx.init();
-    if (UI.modalOpen()) return;
-    if (G.mode === 'menu') {
-      startRun();
-      G.held = true;
-    } else if (G.mode === 'play') {
-      G.held = true;
-      Sfx.press();
-    } else if (G.mode === 'ready') {
-      G.mode = 'play';
-      G.held = true;
-    } else if (G.mode === 'over' && root.performance.now() - G.overAt > CFG.OVER_LOCK_MS) {
-      startRun();
-      G.held = true;
-    }
+  // Which fingers and keys are down lives in `input` (see input.js); G.held is derived from it.
+  let input = Input.create();
+  const syncHeld = () => { G.held = G.mode === 'play' && Input.isHeld(input); };
+
+  /** Forget every finger and key that is down. Each has to be pressed again to count. */
+  function dropInput() {
+    input = Input.interrupt(input);
+    G.held = false;
   }
-  const release = () => { G.held = false; };
+
+  // ---------- resume countdown ----------
+  // The simulation only steps in 'play', so it stays frozen while counting.
+  const countdownMs = () => CFG.COUNTDOWN_STEPS * CFG.COUNTDOWN_STEP_MS;
+
+  function beginCountdown() {
+    G.mode = 'count';
+    UI.hidePause();
+    // The next frame's time is measured from the last frame, not from this tap. Start below zero
+    // by the time already gone since that frame, so the countdown runs from the tap itself.
+    G.countMs = Math.min(0, G.last - root.performance.now());
+    G.countDigit = CFG.COUNTDOWN_STEPS;
+  }
+
+  /** Advances the countdown by one frame's real time; at GO, presses still down start holding. */
+  function tickCountdown(dt) {
+    G.countMs += dt * 1000;
+    if (G.countMs >= countdownMs()) {
+      G.mode = 'play';
+      G.countDigit = 0;
+      syncHeld();
+      return;
+    }
+    const elapsed = Math.max(0, G.countMs);
+    G.countDigit = CFG.COUNTDOWN_STEPS - Math.floor(elapsed / CFG.COUNTDOWN_STEP_MS);
+  }
+
+  function onDown(id, primary) {
+    Sfx.init();
+    const locked = G.mode === 'over' && root.performance.now() - G.overAt <= CFG.OVER_LOCK_MS;
+    const r = Input.down(input, id, { mode: G.mode, modal: UI.modalOpen(), locked, primary });
+    if (r.action === 'start') startRun();
+    else if (r.action === 'resume') beginCountdown();
+    else if (r.action === 'hold' && r.first && G.mode === 'play') Sfx.press();
+    input = r.state; // after startRun(), which drops older holds
+    syncHeld();
+  }
+
+  function onUp(id) {
+    input = Input.up(input, id);
+    syncHeld();
+  }
+
+  /**
+   * Focus or visibility was lost: drop every hold and pause, so the run cannot go on unattended.
+   * A countdown in progress is cancelled; resuming needs a new tap and a full countdown.
+   */
+  function interrupt() {
+    dropInput();
+    if (G.mode === 'play' || G.mode === 'count') G.mode = 'ready';
+    if (G.mode === 'ready') showPause();
+    G.countMs = 0;
+    G.countDigit = 0;
+  }
+
   const onControl = (target) => !!(target && target.closest && target.closest('button, .card'));
+  const isPlayKey = (code) => code === 'Space' || code === 'ArrowUp';
 
   function bindInput(stage) {
     stage.addEventListener('pointerdown', (e) => {
       if (onControl(e.target)) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return; // only the main button plays
       e.preventDefault();
-      press();
+      try {
+        stage.setPointerCapture(e.pointerId); // keep receiving this pointer's release off-canvas
+      } catch (err) {
+        /* capture is a bonus: window-level pointerup and blur still end the hold */
+      }
+      onDown(Input.pointerId(e.pointerId), e.isPrimary !== false);
     });
-    root.addEventListener('pointerup', release);
-    root.addEventListener('pointercancel', release);
-    root.addEventListener('blur', release);
+    const pointerEnd = (e) => onUp(Input.pointerId(e.pointerId));
+    root.addEventListener('pointerup', pointerEnd);
+    root.addEventListener('pointercancel', pointerEnd);
+    stage.addEventListener('lostpointercapture', pointerEnd);
     stage.addEventListener('contextmenu', (e) => e.preventDefault());
     root.addEventListener('keydown', (e) => {
-      if (e.repeat || (e.code !== 'Space' && e.code !== 'ArrowUp') || onControl(e.target)) return;
+      if (e.repeat || !isPlayKey(e.code) || onControl(e.target)) return;
       e.preventDefault();
-      press();
+      onDown(Input.keyId(e.code), false);
     });
     root.addEventListener('keyup', (e) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp') release();
+      if (isPlayKey(e.code)) onUp(Input.keyId(e.code));
     });
+    root.addEventListener('blur', interrupt);
     doc.addEventListener('visibilitychange', () => {
-      release();
-      if (doc.hidden && G.mode === 'play') G.mode = 'ready';
+      if (doc.hidden) interrupt();
+      else dropInput();
     });
     root.addEventListener('resize', resize);
   }
@@ -376,17 +610,28 @@
     const skin = CFG.SKINS.find((s) => s.id === id);
     if (!skin) return;
     if (G.save.owned.includes(id)) {
-      G.save = Store.update(G.save, { skin: id });
+      commit({ type: 'wear', id });
       Sfx.click();
     } else if (G.save.gems >= skin.cost) {
-      G.save = Store.update(G.save, { gems: G.save.gems - skin.cost, owned: G.save.owned.concat(id), skin: id });
-      Sfx.buy();
-      UI.toast(skin.name + ' unlocked');
+      // All or nothing: checked against the latest save plus queued changes; no gems spent and
+      // no skin granted unless the purchase is saved.
+      const r = commitPaid({ type: 'buy', id, cost: skin.cost });
+      if (!r.ok) {
+        UI.toast(r.reason === 'rejected'
+          ? (skin.cost - G.save.gems) + ' more gems to unlock ' + skin.name
+          : "Couldn't save, so the purchase was cancelled.");
+        UI.showShop(G.save);
+        return;
+      }
+      const already = r.notes.includes('already-owned'); // bought in another tab: not charged
+      if (already) Sfx.click();
+      else Sfx.buy();
+      UI.toast(skin.name + (already ? ' was already unlocked' : ' unlocked'));
     } else {
       UI.toast((skin.cost - G.save.gems) + ' more gems to unlock ' + skin.name);
       return;
     }
-    G.skin = skinOf(G.save);
+    G.skin = skinOf(G.save); // the player's own pick in the shop shows at once, as before
     UI.showShop(G.save);
   }
 
@@ -402,29 +647,21 @@
         G.overAt = root.performance.now();
       } else UI.showMenu(G.save);
     },
+    /** Shared by the title, result-card and paused sound buttons. Never changes the screen. */
     onSound() {
-      G.save = Store.update(G.save, { muted: !G.save.muted });
-      Sfx.muted = G.save.muted;
-      UI.showMenu(G.save);
+      commit({ type: 'muted', value: !G.save.muted }); // the value the player chose, not a flip
     },
     onRetry: startRun,
     onShare: share,
     onSkin: pickSkin,
-    onRevive() {
-      if (G.mode !== 'over' || G.revived) return;
-      if (G.save.gems >= CFG.REVIVE_COST) {
-        G.save = Store.update(G.save, { gems: G.save.gems - CFG.REVIVE_COST });
-        revive();
-        return;
-      }
-      Ads.rewarded().then((earned) => {
-        if (earned && G.mode === 'over' && !G.revived) revive();
-      });
-    },
+    onRevive: buyRevive,
   };
 
   function boot() {
     const e = UI.mount(doc.getElementById('app'), handlers);
+    UI.setSound(G.save.muted);
+    showSaveNote();
+    root.addEventListener('storage', onStorage);
     G.ctx = e.canvas.getContext('2d');
     for (let i = 0; i < 34; i++) {
       G.streaks.push({ x: Math.random() * C.W, y: Math.random() * 900, z: 0.2 + Math.random() * 0.8 });

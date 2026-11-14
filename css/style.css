@@ -58,6 +58,8 @@ body {
 .group { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 #menu .group:first-of-type { margin-bottom: 26vh; }
 .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+/* Paused: game.js sets `top` so the toggle sits between PAUSED and the twins (see Render.PAUSE). */
+#pause { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); }
 
 /* ---------- title ---------- */
 #menu { height: 100%; justify-content: space-between; padding-block: 6% 3%; box-sizing: border-box; }
@@ -89,6 +91,8 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .chip-gem { color: var(--sun); }
+.save-note { margin: 0; max-width: 30ch; font-size: 14px; font-weight: 600; color: var(--sun); text-shadow: 0 2px 0 var(--ink); }
+.card .save-note { color: var(--coral); text-shadow: none; }
 .start {
   margin: 0;
   font-family: var(--font-display);
@@ -113,6 +117,7 @@ body {
   transition: transform var(--press), box-shadow var(--press);
 }
 .btn:active { transform: translateY(4px); box-shadow: 0 1px 0 var(--ink); }
+.btn:disabled { opacity: 0.55; cursor: default; transform: none; box-shadow: 0 5px 0 var(--ink); }
 .btn:focus-visible, .skin:focus-visible { outline: 3px solid var(--white); outline-offset: 3px; }
 .btn-sun { background: var(--sun); font-size: 20px; padding-block: 14px; }
 .btn-mint { background: var(--mint); }
@@ -186,22 +191,6 @@ body {
   font-weight: 500;
   text-align: center;
 }
-.adph {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  background: var(--night);
-  text-align: center;
-  pointer-events: auto;
-}
-.adph p { margin: 0; }
-.adph-title { font-family: var(--font-display); font-size: 30px; color: var(--sun); }
-.adph-note { max-width: 26ch; opacity: 0.8; }
 
 @media (prefers-reduced-motion: reduce) {
   .start, .card { animation: none; }
